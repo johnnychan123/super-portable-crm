@@ -29,17 +29,21 @@ bun run dist:linux  # Linux (.AppImage)
 
 本專案已配置 `.github/workflows/release.yml`，支援自動建置 **Windows / macOS / Linux** 三平台執行檔並上傳至 **GitHub Releases**：
 
-### 方式一：透過 GitHub CLI 或網頁手動觸發（推薦，無須直接 git push tag）
+### 方式一：透過 GitHub API 建立版本 Tag（推薦，適用於本機代理環境）
 ```bash
-# 先用 git push-api 推送程式碼到 main
+# 1. 先用 git push-api 推送程式碼到 main
 git push-api
 
-# 使用 gh CLI 觸發三平台打包並發佈 v0.1.0 Release
-gh workflow run release.yml -f tag=v0.1.0
+# 2. 透過 GitHub Git Refs API 建立遠端 Tag（例如 v0.1.0）自動觸發三平台打包與 Release
+gh api -X POST repos/johnnychan123/super-portable-crm/git/refs \
+  -f ref="refs/tags/v0.1.0" \
+  -f sha="$(git rev-parse HEAD)"
 ```
-或前往 GitHub Repository 的 **Actions** -> **Release Portable Binaries** -> **Run workflow** 輸入版本號（如 `v0.1.0`）。
 
-### 方式二：推送版本 Tag（一般網路環境）
+### 方式二：GitHub 網頁手動觸發
+前往 GitHub Repository 的 **Actions** -> **Release Portable Binaries** -> **Run workflow** 輸入版本號（如 `v0.1.0`）。
+
+### 方式三：推送版本 Tag（一般網路環境）
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
