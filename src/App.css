@@ -1,103 +1,15 @@
+@import "tailwindcss";
+
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', 'PingFang TC',
+    'Microsoft JhengHei', sans-serif;
   color: #0f172a;
   background-color: #f8fafc;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
 body {
   min-height: 100vh;
-}
-
-.app-container {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2rem;
-}
-
-.hero-card {
-  max-width: 680px;
-  width: 100%;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  padding: 2.5rem;
-  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.06);
-}
-
-.badge {
-  display: inline-block;
-  background: #eff6ff;
-  color: #2563eb;
-  font-size: 0.8rem;
-  font-weight: 600;
-  padding: 0.3rem 0.75rem;
-  border-radius: 999px;
-  margin-bottom: 1rem;
-}
-
-h1 {
-  font-size: 1.85rem;
-  font-weight: 700;
+  background-color: #f8fafc;
   color: #0f172a;
-  margin-bottom: 0.75rem;
 }
 
-.subtitle {
-  color: #475569;
-  line-height: 1.6;
-  margin-bottom: 1.75rem;
-}
-
-.info-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 1rem;
-  margin-bottom: 1.75rem;
-}
-
-.info-item {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 0.9rem 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.info-label {
-  font-size: 0.78rem;
-  color: #64748b;
-}
-
-.info-value {
-  font-size: 1rem;
-  color: #1e293b;
-}
-
-.placeholder-box {
-  background: #f0fdf4;
-  border: 1px dashed #86efac;
-  border-radius: 12px;
-  padding: 1.25rem;
-}
-
-.placeholder-box h2 {
-  font-size: 1rem;
-  color: #166534;
-  margin-bottom: 0.4rem;
-}
-
-.placeholder-box p {
-  font-size: 0.9rem;
-  color: #15803d;
-  line-height: 1.5;
-}

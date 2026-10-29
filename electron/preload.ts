@@ -10,6 +10,13 @@ export interface AppRuntimeInfo {
   chrome: string;
 }
 
+export interface ExcelOpenFileResult {
+  canceled: boolean;
+  fileName?: string;
+  filePath?: string;
+  buffer?: Uint8Array;
+}
+
 const electronAPI = {
   platform: process.platform,
   arch: process.arch,
@@ -19,6 +26,7 @@ const electronAPI = {
     chrome: process.versions.chrome,
   },
   getAppInfo: (): Promise<AppRuntimeInfo> => ipcRenderer.invoke('app:get-info'),
+  openExcelFile: (): Promise<ExcelOpenFileResult> => ipcRenderer.invoke('excel:open-file'),
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

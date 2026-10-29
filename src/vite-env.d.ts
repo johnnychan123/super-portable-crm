@@ -10,6 +10,13 @@ export interface AppRuntimeInfo {
   chrome: string;
 }
 
+export interface ExcelOpenFileResult {
+  canceled: boolean;
+  fileName?: string;
+  filePath?: string;
+  buffer?: Uint8Array;
+}
+
 export interface ElectronAPI {
   platform: string;
   arch: string;
@@ -19,6 +26,7 @@ export interface ElectronAPI {
     chrome: string;
   };
   getAppInfo: () => Promise<AppRuntimeInfo>;
+  openExcelFile?: () => Promise<ExcelOpenFileResult>;
 }
 
 declare global {

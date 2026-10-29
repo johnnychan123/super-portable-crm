@@ -22,16 +22,25 @@
   },
   "dependencies": {},
   "devDependencies": {
+    "@radix-ui/react-slot": "^1.5.0",
+    "@radix-ui/react-tabs": "^1.2.1",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/bun": "latest",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
     "electron": "^34.0.0",
     "electron-builder": "^25.1.8",
+    "lucide-react": "^1.64.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.7.0",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^6.0.5",
+    "xlsx": "^0.18.5"
   }
 }
