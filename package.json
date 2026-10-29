@@ -1,0 +1,37 @@
+{
+  "name": "super-portable-crm",
+  "productName": "Super Portable CRM",
+  "version": "0.1.0",
+  "description": "Cross-platform portable CRM desktop application for Excel data processing and analysis",
+  "main": "dist-electron/main.cjs",
+  "author": "johnnychan123",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev:renderer": "vite",
+    "dev:electron": "bun run build:electron && VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "build:renderer": "vite build",
+    "build:electron": "bun build ./electron/main.ts --outfile ./dist-electron/main.cjs --target=node --format=cjs --external=electron && bun build ./electron/preload.ts --outfile ./dist-electron/preload.cjs --target=node --format=cjs --external=electron",
+    "build": "bun run build:renderer && bun run build:electron",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "dist": "bun run build && electron-builder --publish never",
+    "dist:win": "bun run build && electron-builder --win --publish never",
+    "dist:mac": "bun run build && electron-builder --mac --publish never",
+    "dist:linux": "bun run build && electron-builder --linux --publish never"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}
