@@ -46,5 +46,6 @@ bun run dist:mac
 - **Bundle Dependencies at Build Time**: Keep `"dependencies": {}` empty in `package.json` and install libraries in `"devDependencies"` whenever they can be bundled by Vite (`dist/`) or `bun build` (`dist-electron/`). `electron-builder.yml` is configured with `npmRebuild: false` and packages only `dist/**/*`, `dist-electron/**/*`, and `package.json`.
 - **`bun build` Flag Syntax**: Always pass `--external=electron` (with `=`) in `build:electron` scripts so `bun build` does not mistake `electron` for the local `./electron/` directory.
 - **Git & Release Workflow**:
-  - In environments where direct `git push` is blocked by proxy, push branch commits using `git push-api` and create `v*` release tags via `gh api -X POST repos/johnnychan123/super-portable-crm/git/refs -f ref="refs/tags/vX.Y.Z" -f sha="$(git rev-parse HEAD)"`.
+  - In environments where direct `git push` is blocked by proxy, push branch commits using `git push-api`.
+  - Trigger a release either via `gh workflow run release.yml -f tag=vX.Y.Z` or by creating a `v*` tag ref via `gh api -X POST repos/johnnychan123/super-portable-crm/git/refs -f ref="refs/tags/vX.Y.Z" -f sha="$(git rev-parse HEAD)"`.
   - `.github/workflows/release.yml` builds Windows (`portable` `.exe`), macOS (`zip` & `dmg`), and Linux (`AppImage`) artifacts and attaches them to the GitHub Release.
