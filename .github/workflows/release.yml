@@ -1,0 +1,91 @@
+name: Release Portable Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag name (e.g. v0.1.0)'
+        required: false
+        default: 'v0.1.0'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            os: windows-latest
+            build_cmd: bun run dist:win
+          - platform: macos
+            os: macos-latest
+            build_cmd: bun run dist:mac
+          - platform: linux
+            os: ubuntu-latest
+            build_cmd: bun run dist:linux
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run tests
+        run: bun test
+
+      - name: Build portable package (${{ matrix.platform }})
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: ${{ matrix.build_cmd }}
+
+      - name: Upload portable binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            release/*.exe
+            release/*.zip
+            release/*.dmg
+            release/*.AppImage
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all portable binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List release artifacts
+        run: ls -lh artifacts/
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && (inputs.tag || 'v0.1.0') || github.ref_name }}
+          name: Release ${{ github.event_name == 'workflow_dispatch' && (inputs.tag || 'v0.1.0') || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.exe
+            artifacts/*.zip
+            artifacts/*.dmg
+            artifacts/*.AppImage
