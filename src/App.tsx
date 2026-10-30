@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import pkg from '../package.json';
 import {
   Building2,
   CheckCircle2,
@@ -33,6 +34,8 @@ import {
   TableRow,
 } from './components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
+
+export const APP_VERSION = pkg.version;
 
 export function formatPlatformLabel(platform: string, arch?: string): string {
   const names: Record<string, string> = {
@@ -207,7 +210,7 @@ export default function App(): React.ReactElement {
                   Super Portable CRM
                 </h1>
                 <Badge variant="secondary" className="text-[11px]">
-                  v{info?.version ?? '0.1.0'} · {formatPlatformLabel(platform, arch)}
+                  v{info?.version ?? APP_VERSION} · {formatPlatformLabel(platform, arch)}
                 </Badge>
               </div>
               <p className="text-xs text-slate-500">

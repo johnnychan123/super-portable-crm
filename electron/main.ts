@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { loadWindowContent } from './windowLoader';
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -17,11 +18,16 @@ function createWindow(): void {
   });
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-  if (devServerUrl) {
-    void mainWindow.loadURL(devServerUrl);
-  } else {
-    void mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
-  }
+  const indexHtmlPath = path.join(__dirname, '../dist/index.html');
+
+  void loadWindowContent(
+    {
+      clearCache: () => mainWindow.webContents.session.clearCache(),
+      loadURL: (url) => mainWindow.loadURL(url),
+      loadFile: (filePath) => mainWindow.loadFile(filePath),
+    },
+    { devServerUrl, indexHtmlPath },
+  );
 }
 
 app.whenReady().then(() => {
