@@ -1,9 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { loadWindowContent } from './windowLoader';
+import { loadWindowContent, resolveAppPaths } from './windowLoader';
 
 function createWindow(): void {
+  const { preloadPath, indexHtmlPath } = resolveAppPaths(app.getAppPath());
+
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -11,14 +13,13 @@ function createWindow(): void {
     minHeight: 600,
     title: 'Super Portable CRM',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-  const indexHtmlPath = path.join(__dirname, '../dist/index.html');
 
   void loadWindowContent(
     {

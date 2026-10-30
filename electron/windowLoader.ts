@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 export interface WindowContentTarget {
   clearCache: () => Promise<void>;
   loadURL: (url: string) => Promise<void>;
@@ -7,6 +9,18 @@ export interface WindowContentTarget {
 export interface LoadWindowContentOptions {
   devServerUrl?: string;
   indexHtmlPath: string;
+}
+
+export interface ResolvedAppPaths {
+  preloadPath: string;
+  indexHtmlPath: string;
+}
+
+export function resolveAppPaths(appPath: string): ResolvedAppPaths {
+  return {
+    preloadPath: path.join(appPath, 'dist-electron', 'preload.cjs'),
+    indexHtmlPath: path.join(appPath, 'dist', 'index.html'),
+  };
 }
 
 export async function loadWindowContent(
