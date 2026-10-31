@@ -18,7 +18,8 @@ export interface ExternalMatchKeyOption {
 
 export interface GroupMatchOverride {
   id: string;
-  groupCode: string;
+  groupCodes?: string[];
+  groupCode?: string;
   matchKey: string;
 }
 
@@ -345,12 +346,16 @@ export function matchExternalFilterToDb(
   const groupOverrideColumnsMap = new Map<string, string[]>();
   if (useGlobalConfig && config?.groupOverrides) {
     for (const override of config.groupOverrides) {
-      const normalizedGroup = override.groupCode.trim().toUpperCase();
-      if (!normalizedGroup) continue;
-      groupOverrideColumnsMap.set(
-        normalizedGroup,
-        resolveMatchKeyColumns(override.matchKey, sheet, dbRows),
-      );
+      const codes = [
+        ...(override.groupCodes ?? []),
+        ...(override.groupCode ? [override.groupCode] : []),
+      ];
+      const cols = resolveMatchKeyColumns(override.matchKey, sheet, dbRows);
+      for (const rawCode of codes) {
+        const normalizedGroup = rawCode.trim().toUpperCase();
+        if (!normalizedGroup) continue;
+        groupOverrideColumnsMap.set(normalizedGroup, cols);
+      }
     }
   }
 
@@ -540,4 +545,50 @@ export function getGroupOptionsForOverride(
   withExt.sort((a, b) => b.externalCount - a.externalCount);
   return [...withExt, ...withoutExt];
 }
+
+export function filterGroupsByPrefix(
+  options: ReadonlyArray<GroupOptionForOverride>,
+  prefixOrQuery: string,
+): GroupOptionForOverride[] {
+  const trimmed = prefixOrQuery.trim();
+  if (!trimmed) {
+    return [...options];
+  }
+  const upperPrefix = trimmed.toUpperCase();
+  const lowerQuery = trimmed.toLowerCase();
+  return options.filter(
+    (item) =>
+      item.code.toUpperCase().startsWith(upperPrefix) ||
+      item.nameZh.toLowerCase().includes(lowerQuery),
+  );
+}
+
+export function applyPrefixGroupSelection(
+  currentCodes: ReadonlyArray<string>,
+  options: ReadonlyArray<GroupOptionForOverride>,
+  prefixOrQuery: string,
+  mode: 'select' | 'deselect',
+): string[] {
+  const matched = filterGroupsByPrefix(options, prefixOrQuery);
+  if (matched.length === 0) {
+    return [...currentCodes];
+  }
+
+  const matchedUpperSet = new Set(matched.map((g) => g.code.trim().toUpperCase()));
+  if (mode === 'deselect') {
+    return currentCodes.filter((code) => !matchedUpperSet.has(code.trim().toUpperCase()));
+  }
+
+  const seenUpper = new Set(currentCodes.map((c) => c.trim().toUpperCase()));
+  const next = [...currentCodes];
+  for (const item of matched) {
+    const upper = item.code.trim().toUpperCase();
+    if (upper && !seenUpper.has(upper)) {
+      seenUpper.add(upper);
+      next.push(item.code);
+    }
+  }
+  return next;
+}
+
 

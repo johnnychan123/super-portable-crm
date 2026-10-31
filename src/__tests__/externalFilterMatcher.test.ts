@@ -2,7 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import * as XLSX from 'xlsx';
 import { filterDbRows, type DbRowItem } from '../lib/excelParser';
 import {
+  applyPrefixGroupSelection,
   computeExternalFilterRowSet,
+  filterGroupsByPrefix,
   getAvailableMatchKeys,
   getGroupOptionsForOverride,
   matchExternalFilterToDb,
@@ -244,5 +246,72 @@ describe('externalFilterMatcher', () => {
     expect(groupOpts[0]?.externalCount).toBe(2);
     expect(groupOpts[1]?.externalCount).toBe(1);
     expect(groupOpts[2]?.externalCount).toBe(0);
+  });
+
+  test('supports multi-group groupCodes in a single rule and prefix batch selection/deselection', () => {
+    const buf = makeWorkbookBuffer('DB', [
+      ['組別', 'PID', '姓名', '桌號'],
+      ['MA001', '', '陳大文', 'A1'], // MA001 uses default PID+組別 -> missing PID -> not matched
+      ['MZ001', '', '李小明', 'Z1'], // MZ001 in multi-group rule (組別+姓名) -> matched
+      ['MZ002', '', '張三', 'Z2'], // MZ002 in multi-group rule (組別+姓名) -> matched
+    ]);
+
+    const multiGroupDbRows: DbRowItem[] = [
+      {
+        rowNumber: 3,
+        kind: 'record',
+        values: { 組別: 'MA001', PID: 'P001', 姓名: '陳大文' },
+        ancestorSectionRows: [],
+      },
+      {
+        rowNumber: 4,
+        kind: 'record',
+        values: { 組別: 'MZ001', PID: '', 姓名: '李小明' },
+        ancestorSectionRows: [],
+      },
+      {
+        rowNumber: 5,
+        kind: 'record',
+        values: { 組別: 'MZ002', PID: '', 姓名: '張三' },
+        ancestorSectionRows: [],
+      },
+    ];
+
+    const groupOpts = [
+      { code: 'MA001', nameZh: '行政長官辦公室', category: 'A', externalCount: 1 },
+      { code: 'MZ001', nameZh: '基本法委員會', category: 'B', externalCount: 1 },
+      { code: 'MZ002', nameZh: '選舉委員會', category: 'B', externalCount: 1 },
+    ];
+
+    expect(filterGroupsByPrefix(groupOpts, 'mz').map((g) => g.code)).toEqual([
+      'MZ001',
+      'MZ002',
+    ]);
+
+    const selectedAfterPrefix = applyPrefixGroupSelection(
+      ['MA009'],
+      groupOpts,
+      'MZ',
+      'select',
+    );
+    expect(selectedAfterPrefix).toEqual(['MA009', 'MZ001', 'MZ002']);
+
+    const selectedAfterDeselect = applyPrefixGroupSelection(
+      selectedAfterPrefix,
+      groupOpts,
+      'MZ001',
+      'deselect',
+    );
+    expect(selectedAfterDeselect).toEqual(['MA009', 'MZ002']);
+
+    const parsed = parseExternalFilterWorkbook(buf, 'multi_mz.xlsx', dbHeaders);
+    const res = matchExternalFilterToDb(parsed, multiGroupDbRows, 'global', {
+      defaultMatchKey: 'PID+組別',
+      groupOverrides: [
+        { id: 'rule-mz', groupCodes: ['MZ001', 'MZ002'], matchKey: '組別+姓名' },
+      ],
+    });
+
+    expect(Array.from(res.matchedDbRowNumbers)).toEqual([4, 5]);
   });
 });
