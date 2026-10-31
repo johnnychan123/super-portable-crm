@@ -2,6 +2,13 @@
 
 跨平台免安裝（Portable）CRM 與 Excel 資料處理桌面應用程式，採用 **Bun + Electron + React + TypeScript (Vite)** 架構。
 
+## 線上網頁版（GitHub Pages）
+
+無需下載或安裝，直接於瀏覽器開啟即可使用（所有 Excel 解析、比對與匯出皆在瀏覽器本地端執行，不會上傳至任何伺服器）：
+
+- **線上網址**：[https://johnnychan123.github.io/super-portable-crm/](https://johnnychan123.github.io/super-portable-crm/)
+- **自動部署**：每次推送至 `main` 分支時，`.github/workflows/ci.yml` 會自動執行測試、建置 `dist/` 並發佈至 GitHub Pages。
+
 ## 環境需求
 
 - [Bun](https://bun.sh/) >= 1.1

@@ -83,6 +83,21 @@ describe('Super Portable CRM Hello World', () => {
     expect(builderConfig).toContain('signAndEditExecutable: false');
   });
 
+  test('ci.yml deploys dist/ to GitHub Pages and README.md documents the live web URL', () => {
+    const ciWorkflow = fs.readFileSync(
+      path.join(__dirname, '../../.github/workflows/ci.yml'),
+      'utf8'
+    );
+    expect(ciWorkflow).toContain('actions/upload-pages-artifact');
+    expect(ciWorkflow).toContain('actions/deploy-pages');
+
+    const readme = fs.readFileSync(
+      path.join(__dirname, '../../README.md'),
+      'utf8'
+    );
+    expect(readme).toContain('https://johnnychan123.github.io/super-portable-crm/');
+  });
+
   test('resolveAppPaths and bundled main.cjs resolve runtime paths via app.getAppPath without hardcoded __dirname', () => {
     const resolved = resolveAppPaths('/runtime/app.asar');
     expect(resolved.preloadPath).toBe(path.join('/runtime/app.asar', 'dist-electron', 'preload.cjs'));
