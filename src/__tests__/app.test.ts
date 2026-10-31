@@ -12,8 +12,10 @@ import {
   recomputeFilesWithGlobalRules,
   reconcileExternalFilterState,
   resolveActiveOutputHeaders,
+  resolveInitialCustomMatchKey,
   toggleGroupCodeInList,
 } from '../App';
+import { encodeCustomMatchKey, parseCustomMatchKeyColumns } from '../lib/externalFilterMatcher';
 import { computeVirtualWindow, findJumpTargetIndex } from '../components/VirtualizedDbTable';
 import type { DbRowItem } from '../lib/excelParser';
 import {
@@ -242,5 +244,13 @@ describe('Super Portable CRM Hello World', () => {
     // Multi-group groupCodes and toggleGroupCodeInList
     expect(toggleGroupCodeInList(['MZ001'], 'MZ002')).toEqual(['MZ001', 'MZ002']);
     expect(toggleGroupCodeInList(['MZ001', 'MZ002'], 'mz001')).toEqual(['MZ002']);
+
+    // Custom composite match key initialization and global recomputation
+    const initCustom = resolveInitialCustomMatchKey('auto', ['組別', '姓名', '手提電話']);
+    expect(parseCustomMatchKeyColumns(initCustom)).toEqual(['組別', '姓名']);
+    const existingCustom = encodeCustomMatchKey(['組別', '手提電話']);
+    expect(resolveInitialCustomMatchKey(existingCustom, ['組別', '姓名', '手提電話'])).toBe(
+      existingCustom,
+    );
   });
 });

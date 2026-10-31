@@ -39,19 +39,25 @@ import {
   resolveExportDbRows,
 } from './lib/excelExporter';
 import {
+  CUSTOM_MATCH_KEY_PREFIX,
   type ExternalFilterMatchConfig,
   type ExternalFilterViewMode,
   type GroupMatchOverride,
   type ImportedFilterFile,
   applyPrefixGroupSelection,
   computeExternalFilterRowSet,
+  encodeCustomMatchKey,
   filterGroupsByPrefix,
   getAvailableMatchKeys,
   getGlobalMatchKeyOptions,
   getGroupOptionsForOverride,
+  isCustomMatchKey,
   matchExternalFilterToDb,
   mergeExtraValuesFromFiles,
+  parseCustomMatchKeyColumns,
   parseExternalFilterWorkbook,
+  prioritizeMatchColumns,
+  toggleColumnInCustomMatchKey,
 } from './lib/externalFilterMatcher';
 import { VirtualizedDbTable } from './components/VirtualizedDbTable';
 import { Badge } from './components/ui/badge';
@@ -167,6 +173,22 @@ export function reconcileExternalFilterState(
     exportTemplateFileId: nextTemplateId,
     exportColumnMode: current.exportColumnMode,
   };
+}
+
+export function resolveInitialCustomMatchKey(
+  currentKey: string,
+  availableColumns: ReadonlyArray<string>,
+): string {
+  const existingCols = parseCustomMatchKeyColumns(currentKey);
+  if (existingCols.length > 0) {
+    return encodeCustomMatchKey(existingCols);
+  }
+  const colSet = new Set(availableColumns);
+  if (colSet.has('組別') && colSet.has('姓名')) {
+    return encodeCustomMatchKey(['組別', '姓名']);
+  }
+  const prioritized = prioritizeMatchColumns(availableColumns);
+  return encodeCustomMatchKey(prioritized.slice(0, 2));
 }
 
 export function toggleGroupCodeInList(
@@ -578,6 +600,94 @@ export default function App(): React.ReactElement {
         defaultMatchKey: defaultExternalMatchKey,
         groupOverrides: nextOverrides,
       }),
+    );
+  };
+
+  const renderCustomCompositeColumnPicker = (
+    currentMatchKey: string,
+    availableColumns: ReadonlyArray<string>,
+    onChangeKey: (nextKey: string) => void,
+  ): React.JSX.Element | null => {
+    if (!isCustomMatchKey(currentMatchKey)) return null;
+    const selectedCols = parseCustomMatchKeyColumns(currentMatchKey);
+    const selectedSet = new Set(selectedCols);
+    const orderedCols = prioritizeMatchColumns(availableColumns);
+
+    return (
+      <div className="rounded-md border border-indigo-200 bg-indigo-50/40 p-2.5 space-y-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-semibold text-indigo-950">
+              自訂複合欄組合（已選 {selectedCols.length} 欄）：
+            </span>
+            {selectedCols.length === 0 ? (
+              <span className="text-rose-600 font-medium">
+                請點擊下方欄位勾選至少 1 個比對欄位
+              </span>
+            ) : (
+              selectedCols.map((col, idx) => (
+                <React.Fragment key={col}>
+                  {idx > 0 && <span className="text-indigo-500 font-bold">+</span>}
+                  <Badge
+                    variant="secondary"
+                    className="gap-1 bg-indigo-600 text-white hover:bg-indigo-700 text-[11px]"
+                  >
+                    <span>{col}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onChangeKey(toggleColumnInCustomMatchKey(currentMatchKey, col))
+                      }
+                      className="ml-0.5 text-indigo-100 hover:text-white"
+                      title={`移除「${col}」`}
+                    >
+                      ×
+                    </button>
+                  </Badge>
+                </React.Fragment>
+              ))
+            )}
+          </div>
+          {selectedCols.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-[11px] text-slate-500 hover:text-rose-600"
+              onClick={() => onChangeKey(CUSTOM_MATCH_KEY_PREFIX)}
+            >
+              清空已選欄位
+            </Button>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1 max-h-28 overflow-y-auto rounded border border-indigo-100 bg-white p-1.5">
+          {orderedCols.map((col) => {
+            const checked = selectedSet.has(col);
+            return (
+              <button
+                key={col}
+                type="button"
+                onClick={() =>
+                  onChangeKey(toggleColumnInCustomMatchKey(currentMatchKey, col))
+                }
+                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] border transition-colors ${
+                  checked
+                    ? 'border-indigo-500 bg-indigo-50 text-indigo-950 font-semibold'
+                    : 'border-slate-200 bg-slate-50/60 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  readOnly
+                  className="h-3 w-3 rounded border-slate-300 pointer-events-none"
+                />
+                <span>{col}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
     );
   };
 
@@ -2107,10 +2217,21 @@ export default function App(): React.ReactElement {
                                   預設對比依據：
                                 </span>
                                 <select
-                                  value={defaultExternalMatchKey}
-                                  onChange={(e) =>
-                                    handleChangeDefaultExternalMatchKey(e.target.value)
+                                  value={
+                                    isCustomMatchKey(defaultExternalMatchKey)
+                                      ? CUSTOM_MATCH_KEY_PREFIX
+                                      : defaultExternalMatchKey
                                   }
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const nextKey = isCustomMatchKey(val)
+                                      ? resolveInitialCustomMatchKey(
+                                          defaultExternalMatchKey,
+                                          workbook.dbHeaders,
+                                        )
+                                      : val;
+                                    handleChangeDefaultExternalMatchKey(nextKey);
+                                  }}
                                   className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
                                 >
                                   {getGlobalMatchKeyOptions(workbook.dbHeaders).map((opt) => (
@@ -2134,6 +2255,12 @@ export default function App(): React.ReactElement {
                                 新增特定組別對比依據
                               </Button>
                             </div>
+
+                            {renderCustomCompositeColumnPicker(
+                              defaultExternalMatchKey,
+                              workbook.dbHeaders,
+                              handleChangeDefaultExternalMatchKey,
+                            )}
 
                             {groupMatchOverrides.length > 0 && (
                               <div className="space-y-2.5 pt-1 border-t border-slate-100">
@@ -2179,12 +2306,23 @@ export default function App(): React.ReactElement {
                                               使用對比依據：
                                             </span>
                                             <select
-                                              value={rule.matchKey}
-                                              onChange={(e) =>
-                                                handleUpdateGroupMatchOverride(rule.id, {
-                                                  matchKey: e.target.value,
-                                                })
+                                              value={
+                                                isCustomMatchKey(rule.matchKey)
+                                                  ? CUSTOM_MATCH_KEY_PREFIX
+                                                  : rule.matchKey
                                               }
+                                              onChange={(e) => {
+                                                const val = e.target.value;
+                                                const nextKey = isCustomMatchKey(val)
+                                                  ? resolveInitialCustomMatchKey(
+                                                      rule.matchKey,
+                                                      workbook.dbHeaders,
+                                                    )
+                                                  : val;
+                                                handleUpdateGroupMatchOverride(rule.id, {
+                                                  matchKey: nextKey,
+                                                });
+                                              }}
                                               className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
                                             >
                                               {getGlobalMatchKeyOptions(workbook.dbHeaders).map(
@@ -2229,6 +2367,15 @@ export default function App(): React.ReactElement {
                                             </Button>
                                           </div>
                                         </div>
+
+                                        {renderCustomCompositeColumnPicker(
+                                          rule.matchKey,
+                                          workbook.dbHeaders,
+                                          (nextKey) =>
+                                            handleUpdateGroupMatchOverride(rule.id, {
+                                              matchKey: nextKey,
+                                            }),
+                                        )}
 
                                         {/* Row 2: Prefix Quick Filter & Batch Select Bar */}
                                         <div className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2.5 py-1.5">
@@ -2484,16 +2631,34 @@ export default function App(): React.ReactElement {
                                           </span>
                                         )}
                                       </div>
+
+                                      {renderCustomCompositeColumnPicker(
+                                        file.selectedMatchKey,
+                                        file.sheet.sharedHeaders,
+                                        (nextKey) =>
+                                          handleChangeExternalMatchKey(file.id, nextKey),
+                                      )}
                                     </div>
 
                                     <div className="flex flex-wrap items-center gap-2">
                                       <div className="flex items-center gap-1">
                                         <span className="text-slate-500">比對依據：</span>
                                         <select
-                                          value={file.selectedMatchKey}
-                                          onChange={(e) =>
-                                            handleChangeExternalMatchKey(file.id, e.target.value)
+                                          value={
+                                            isCustomMatchKey(file.selectedMatchKey)
+                                              ? CUSTOM_MATCH_KEY_PREFIX
+                                              : file.selectedMatchKey
                                           }
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            const nextKey = isCustomMatchKey(val)
+                                              ? resolveInitialCustomMatchKey(
+                                                  file.selectedMatchKey,
+                                                  file.sheet.sharedHeaders,
+                                                )
+                                              : val;
+                                            handleChangeExternalMatchKey(file.id, nextKey);
+                                          }}
                                           className="h-7 rounded border border-slate-200 bg-slate-50 px-2 text-xs text-slate-800"
                                         >
                                           {file.availableMatchKeys.map((opt) => (
