@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  computeDbFacetCounts,
   filterDbRows,
   filterGroups,
+  getSectionRecordRowNumbers,
   getVisibleDbHeaders,
   parseCrmWorkbook,
 } from '../lib/excelParser';
@@ -124,5 +126,94 @@ describe('parseCrmWorkbook with test.xlsx', () => {
 
     const allHeaders = getVisibleDbHeaders(result.dbHeaders, 'all');
     expect(allHeaders.length).toBe(50);
+  });
+
+  test('tracks 3-level ancestorSectionRows, sectorCode, and category on DB record rows', () => {
+    const result = parseCrmWorkbook(fileBuffer, 'test.xlsx');
+    const row5 = result.dbRows.find((r) => r.rowNumber === 5); // MA001-01 record
+    expect(row5?.kind).toBe('record');
+    expect(row5?.ancestorSectionRows).toEqual([2, 3, 4]); // MA000 (2), MA001 (3), MA001-01 (4)
+    expect(row5?.sectorCode).toBe('MA000');
+    expect(row5?.category).toBe('現任官員');
+
+    const row16 = result.dbRows.find((r) => r.rowNumber === 16); // MA001-02 record
+    expect(row16?.ancestorSectionRows).toEqual([2, 3, 15]); // MA000 (2), MA001 (3), MA001-02 (15)
+
+    const row50 = result.dbRows.find((r) => r.rowNumber === 50); // MZ001 record
+    expect(row50?.ancestorSectionRows).toEqual([48, 49]); // MZ000 (48), MZ001 (49)
+    expect(row50?.sectorCode).toBe('MZ000');
+    expect(row50?.category).toBe('委員會');
+  });
+
+  test('filters DB rows by sector, category, custom rules, selection state, and retains only matched ancestor sections', () => {
+    const result = parseCrmWorkbook(fileBuffer, 'test.xlsx');
+
+    const ma00102WithSections = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      groupFilter: 'MA001-02',
+      showSectionHeaders: true,
+    });
+    expect(ma00102WithSections.map((r) => r.rowNumber)).toEqual([2, 3, 15, 16]);
+
+    const customFiltered = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      showSectionHeaders: false,
+      customRulesMode: 'AND',
+      customRules: [
+        { id: 'r1', column: '組別', operator: 'equals', value: 'MA002' },
+        { id: 'r2', column: '計算', operator: 'equals', value: '0' },
+      ],
+    });
+    expect(customFiltered.length).toBe(9);
+    expect(customFiltered.every((r) => r.values['組別'] === 'MA002' && r.values['計算'] === '0')).toBe(true);
+
+    const selectedSet = new Set<number>([5, 50]);
+    const onlySelected = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      selectionFilter: 'selected',
+      selectedRowNumbers: selectedSet,
+      showSectionHeaders: true,
+    });
+    expect(onlySelected.map((r) => r.rowNumber)).toEqual([2, 3, 4, 5, 48, 49, 50]);
+  });
+
+  test('sorts DB record rows by column while hiding section headers during active sort', () => {
+    const result = parseCrmWorkbook(fileBuffer, 'test.xlsx');
+    const sortedDesc = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      groupFilter: 'MZ001',
+      showSectionHeaders: true,
+      sort: { column: '出席活動', direction: 'desc' },
+    });
+    expect(sortedDesc.every((r) => r.kind === 'record')).toBe(true);
+    // In MZ001, Row 50 is '不出席活動' and Row 51 is 'Y'; descending sort places 'Y' first and '不出席活動' last
+    expect(sortedDesc[0]?.values['出席活動']).toBe('Y');
+    expect(sortedDesc[sortedDesc.length - 1]?.values['出席活動']).toBe('不出席活動');
+
+    const sortedAsc = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      groupFilter: 'MZ001',
+      showSectionHeaders: true,
+      sort: { column: '出席活動', direction: 'asc' },
+    });
+    expect(sortedAsc[0]?.values['出席活動']).toBe('不出席活動');
+    expect(sortedAsc[sortedAsc.length - 1]?.values['出席活動']).toBe('Y');
+  });
+
+  test('computes facet counts and section descendant record rowNumbers', () => {
+    const result = parseCrmWorkbook(fileBuffer, 'test.xlsx');
+    const counts = computeDbFacetCounts(result.dbRows);
+    expect(counts.bySector.get('MA000')).toBe(38);
+    expect(counts.bySector.get('MZ000')).toBe(10);
+    expect(counts.byGroup.get('MZ001')).toBe(10);
+
+    // Section row 3 (MA001) covers MA001-01 (10 rows), MA001-02 (1 row), MA001-03 (2 rows) = 13 rows
+    const ma001Records = getSectionRecordRowNumbers(result.dbRows, 3);
+    expect(ma001Records.length).toBe(13);
   });
 });
