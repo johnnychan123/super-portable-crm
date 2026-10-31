@@ -124,9 +124,7 @@ export function parseCrmWorkbook(
         const rowNumber = r + 1;
         const groupVal = values['組別'] ?? '';
         const nameVal = values['姓名'] ?? '';
-        const calcVal = values['計算'] ?? '';
-        const attendVal = values['出席活動'] ?? '';
-        const match = groupVal === '' && calcVal === '' && attendVal === '' ? SECTION_CODE_REGEX.exec(nameVal) : null;
+        const match = groupVal === '' ? SECTION_CODE_REGEX.exec(nameVal) : null;
 
         if (match) {
           const sectionCode = match[1];

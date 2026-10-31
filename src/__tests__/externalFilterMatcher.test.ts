@@ -420,4 +420,17 @@ describe('externalFilterMatcher', () => {
       Array.from(matchExternalFilterToDb(sheet, customDbRows, 'custom:').matchedDbRowNumbers),
     ).toEqual([]);
   });
+
+  test('identifies section header rows whenever 組別 is empty and code matches ^M[A-Z]\\d{3}(-\\d{2})? even if 計算 or 出席活動 has values', () => {
+    const buf = makeWorkbookBuffer('DB', [
+      ['組別', '計算', '出席活動', '姓名', '職位', '活動備註'],
+      ['', '10', '5', 'MA000 公共行政部門', '', '小計列'],
+      ['', '3', '2', 'MA001-01 行政長官辦公室分組', '備註欄', '小計列2'],
+      ['MA001', '1', '1', '陳大文', '處長', 'VIP'],
+    ]);
+
+    const parsed = parseExternalFilterWorkbook(buf, 'subtotal_sections.xlsx', dbHeaders);
+    expect(parsed.rows.length).toBe(1);
+    expect(parsed.rows[0]?.['姓名']).toBe('陳大文');
+  });
 });

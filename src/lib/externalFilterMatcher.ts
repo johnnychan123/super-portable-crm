@@ -118,14 +118,12 @@ export function parseExternalFilterWorkbook(
           continue;
         }
 
-        // Detect and skip section header rows (e.g. MA000 公共行政部門)
+        // Detect and skip section header rows (e.g. MA000 公共行政部門):
+        // A row is a section header when 組別 is empty and the row's section text matches ^M[A-Z]\d{3}(-\d{2})?
         const groupVal = values['組別'] ?? '';
-        const calcVal = values['計算'] ?? '';
-        const attendVal = values['出席活動'] ?? '';
         const nameVal = values['姓名'] ?? '';
         const firstNonEmptyVal =
           nameVal || Object.values(values).find((v) => v !== '') || '';
-        const nonEmptyCount = Object.values(values).filter((v) => v !== '').length;
 
         const firstColHeader = headers[0] ?? '';
         const firstColVal = firstColHeader ? (values[firstColHeader] ?? '') : '';
@@ -142,10 +140,8 @@ export function parseExternalFilterWorkbook(
 
         const isSectionRow =
           (groupVal === '' &&
-            calcVal === '' &&
-            attendVal === '' &&
-            SECTION_CODE_REGEX.test(firstNonEmptyVal) &&
-            (nameVal !== '' || nonEmptyCount <= 2)) ||
+            (SECTION_CODE_REGEX.test(nameVal) ||
+              SECTION_CODE_REGEX.test(firstNonEmptyVal))) ||
           isFallbackSectionRow;
 
         if (isSectionRow) {
