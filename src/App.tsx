@@ -1,26 +1,44 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import pkg from '../package.json';
 import {
+  ArrowUpDown,
   Building2,
   CheckCircle2,
+  CheckSquare,
+  Download,
   FileSpreadsheet,
   Filter,
   FolderKanban,
   Layers,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  RotateCcw,
   Search,
+  SlidersHorizontal,
+  Trash2,
   Upload,
   Users,
-  XCircle,
 } from 'lucide-react';
 import type { AppRuntimeInfo } from './vite-env';
 import {
+  type CustomFilterOperator,
+  type CustomFilterRule,
   type DbColumnPreset,
+  type DbSortOption,
   type ParsedCrmWorkbook,
+  computeDbFacetCounts,
   filterDbRows,
   filterGroups,
   getVisibleDbHeaders,
   parseCrmWorkbook,
 } from './lib/excelParser';
+import {
+  buildDefaultExportFileName,
+  buildExportWorkbookBuffer,
+  resolveExportDbRows,
+} from './lib/excelExporter';
+import { VirtualizedDbTable } from './components/VirtualizedDbTable';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
@@ -51,19 +69,89 @@ export function getGreetingMessage(appName = 'Super Portable CRM'): string {
   return `Hello World! Welcome to ${appName}`;
 }
 
+export function applyBatchSelection(
+  current: ReadonlySet<number>,
+  targetRowNumbers: number[],
+  mode: 'select' | 'deselect' | 'invert' | 'clear',
+): Set<number> {
+  if (mode === 'clear') {
+    return new Set<number>();
+  }
+  const next = new Set<number>(current);
+  for (const rowNum of targetRowNumbers) {
+    if (mode === 'select') {
+      next.add(rowNum);
+    } else if (mode === 'deselect') {
+      next.delete(rowNum);
+    } else if (mode === 'invert') {
+      if (next.has(rowNum)) {
+        next.delete(rowNum);
+      } else {
+        next.add(rowNum);
+      }
+    }
+  }
+  return next;
+}
+
+export function getNextSortState(
+  current: DbSortOption,
+  clickedColumn: string,
+): DbSortOption {
+  if (current.column !== clickedColumn) {
+    return { column: clickedColumn, direction: 'asc' };
+  }
+  if (current.direction === 'asc') {
+    return { column: clickedColumn, direction: 'desc' };
+  }
+  return { column: null, direction: 'asc' };
+}
+
+const OPERATOR_LABELS: Record<CustomFilterOperator, string> = {
+  contains: '包含',
+  not_contains: '不包含',
+  equals: '等於',
+  not_equals: '不等於',
+  is_empty: '為空白',
+  is_not_empty: '不為空白',
+};
+
 export default function App(): React.ReactElement {
   const [info, setInfo] = useState<AppRuntimeInfo | null>(null);
   const [workbook, setWorkbook] = useState<ParsedCrmWorkbook | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
-  // DB table filters
+  // DB table filters & view states
   const [dbSearch, setDbSearch] = useState('');
-  const [attendanceFilter, setAttendanceFilter] = useState<'all' | 'Y' | '不出席活動'>('all');
+  const [attendanceFilter, setAttendanceFilter] = useState<'all' | 'Y' | '不出席活動' | 'blank'>('all');
+  const [receptionFilter, setReceptionFilter] = useState<'all' | '%' | 'blank'>('all');
+  const [flagRaisingFilter, setFlagRaisingFilter] = useState<'all' | '*' | 'blank'>('all');
+  const [calcFilter, setCalcFilter] = useState<'all' | '1' | '0'>('all');
+  const [dbSectorFilter, setDbSectorFilter] = useState('all');
+  const [dbCategoryFilter, setDbCategoryFilter] = useState('all');
+  const [dbGroupFilter, setDbGroupFilter] = useState('all');
+  const [selectionFilter, setSelectionFilter] = useState<'all' | 'selected' | 'unselected'>('all');
   const [showSectionHeaders, setShowSectionHeaders] = useState(true);
   const [columnPreset, setColumnPreset] = useState<DbColumnPreset>('core');
+  const [sort, setSort] = useState<DbSortOption>({ column: null, direction: 'asc' });
 
-  // 組別 table filters
+  // Custom multi-column compound filter builder
+  const [showCustomFilterPanel, setShowCustomFilterPanel] = useState(false);
+  const [customRules, setCustomRules] = useState<CustomFilterRule[]>([]);
+  const [customRulesMode, setCustomRulesMode] = useState<'AND' | 'OR'>('AND');
+
+  // Left navigation sidebar state
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [sidebarTab, setSidebarTab] = useState<'sectors' | 'categories' | 'groups'>('sectors');
+  const [sidebarGroupSearch, setSidebarGroupSearch] = useState('');
+
+  // Selected record rowNumbers
+  const [selectedRowNumbers, setSelectedRowNumbers] = useState<Set<number>>(new Set());
+
+  // 組別 tab filters
   const [groupSearch, setGroupSearch] = useState('');
   const [sectorFilter, setSectorFilter] = useState('all');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -84,6 +172,20 @@ export default function App(): React.ReactElement {
   const platform = info?.platform ?? window.electronAPI?.platform ?? 'web';
   const arch = info?.arch ?? window.electronAPI?.arch ?? '';
 
+  const resetAllDbFilters = (): void => {
+    setDbSearch('');
+    setAttendanceFilter('all');
+    setReceptionFilter('all');
+    setFlagRaisingFilter('all');
+    setCalcFilter('all');
+    setDbSectorFilter('all');
+    setDbCategoryFilter('all');
+    setDbGroupFilter('all');
+    setSelectionFilter('all');
+    setCustomRules([]);
+    setSort({ column: null, direction: 'asc' });
+  };
+
   const handleLoadBuffer = (
     buffer: Uint8Array | ArrayBuffer,
     fileName: string,
@@ -93,8 +195,9 @@ export default function App(): React.ReactElement {
       const parsed = parseCrmWorkbook(buffer, fileName, filePath);
       setWorkbook(parsed);
       setErrorMessage(null);
-      setDbSearch('');
-      setAttendanceFilter('all');
+      setExportNotice(null);
+      resetAllDbFilters();
+      setSelectedRowNumbers(new Set());
       setGroupSearch('');
       setSectorFilter('all');
       setCategoryFilter('all');
@@ -153,11 +256,201 @@ export default function App(): React.ReactElement {
         ? filterDbRows(workbook.dbRows, {
             searchQuery: dbSearch,
             attendanceFilter,
+            receptionFilter,
+            flagRaisingFilter,
+            calcFilter,
+            sectorFilter: dbSectorFilter,
+            categoryFilter: dbCategoryFilter,
+            groupFilter: dbGroupFilter,
+            selectionFilter,
+            selectedRowNumbers,
+            customRules,
+            customRulesMode,
             showSectionHeaders,
+            sort,
           })
         : [],
-    [workbook, dbSearch, attendanceFilter, showSectionHeaders],
+    [
+      workbook,
+      dbSearch,
+      attendanceFilter,
+      receptionFilter,
+      flagRaisingFilter,
+      calcFilter,
+      dbSectorFilter,
+      dbCategoryFilter,
+      dbGroupFilter,
+      selectionFilter,
+      selectedRowNumbers,
+      customRules,
+      customRulesMode,
+      showSectionHeaders,
+      sort,
+    ],
   );
+
+  const filteredRecordRows = useMemo(
+    () => filteredDbRows.filter((r) => r.kind === 'record'),
+    [filteredDbRows],
+  );
+
+  const totalFacetCounts = useMemo(
+    () => (workbook ? computeDbFacetCounts(workbook.dbRows) : null),
+    [workbook],
+  );
+
+  const filteredFacetCounts = useMemo(
+    () => computeDbFacetCounts(filteredRecordRows),
+    [filteredRecordRows],
+  );
+
+  // Precompute record rowNumbers by sector, category, and group for 1-click sidebar batch selection
+  const recordRowsByFacet = useMemo(() => {
+    const bySector = new Map<string, number[]>();
+    const byCategory = new Map<string, number[]>();
+    const byGroup = new Map<string, number[]>();
+    if (!workbook) return { bySector, byCategory, byGroup };
+
+    for (const row of workbook.dbRows) {
+      if (row.kind !== 'record') continue;
+      if (row.sectorCode) {
+        const list = bySector.get(row.sectorCode) ?? [];
+        list.push(row.rowNumber);
+        bySector.set(row.sectorCode, list);
+      }
+      if (row.category) {
+        const list = byCategory.get(row.category) ?? [];
+        list.push(row.rowNumber);
+        byCategory.set(row.category, list);
+      }
+      const gCode = row.values['組別'] ?? '';
+      if (gCode) {
+        const list = byGroup.get(gCode) ?? [];
+        list.push(row.rowNumber);
+        byGroup.set(gCode, list);
+      }
+    }
+    return { bySector, byCategory, byGroup };
+  }, [workbook]);
+
+  const filteredExportSummary = useMemo(() => {
+    if (!workbook) return { rowsToExport: [], recordCount: 0, sectionCount: 0 };
+    const targetSet = new Set(filteredRecordRows.map((r) => r.rowNumber));
+    return resolveExportDbRows(workbook, { targetRecordRowNumbers: targetSet });
+  }, [workbook, filteredRecordRows]);
+
+  const selectedExportSummary = useMemo(() => {
+    if (!workbook) return { rowsToExport: [], recordCount: 0, sectionCount: 0 };
+    return resolveExportDbRows(workbook, { targetRecordRowNumbers: selectedRowNumbers });
+  }, [workbook, selectedRowNumbers]);
+
+  const handleExportExcel = async (mode: 'filtered' | 'selected'): Promise<void> => {
+    if (!workbook) return;
+    const targetSet =
+      mode === 'selected'
+        ? selectedRowNumbers
+        : new Set(filteredRecordRows.map((r) => r.rowNumber));
+
+    if (targetSet.size === 0) {
+      setErrorMessage(
+        mode === 'selected'
+          ? '目前尚未勾選任何名單，無法匯出'
+          : '目前篩選結果為 0 筆名單，無法匯出',
+      );
+      return;
+    }
+
+    setIsExporting(true);
+    setErrorMessage(null);
+    setExportNotice(null);
+
+    try {
+      const summary = mode === 'selected' ? selectedExportSummary : filteredExportSummary;
+      const suffix = mode === 'selected' ? '已勾選匯出' : '篩選匯出';
+      const defaultFileName = buildDefaultExportFileName(workbook.fileName, suffix);
+      const buffer = buildExportWorkbookBuffer(workbook, { targetRecordRowNumbers: targetSet });
+
+      if (window.electronAPI?.saveExcelFile) {
+        const res = await window.electronAPI.saveExcelFile({
+          defaultFileName,
+          buffer,
+        });
+        if (!res.canceled && res.filePath) {
+          setExportNotice(
+            `已成功匯出 ${summary.recordCount} 筆名單（含 ${summary.sectionCount} 列上層分組標題列、完整 50 欄及組別/界別工作表）至：${res.filePath}`,
+          );
+        }
+        return;
+      }
+
+      // Browser fallback download
+      const blob = new Blob([buffer as unknown as BlobPart], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = defaultFileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setExportNotice(
+        `已下載匯出檔 ${defaultFileName}（共 ${summary.recordCount} 筆名單、保留 ${summary.sectionCount} 列分組標題列及完整結構）`,
+      );
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : '匯出 Excel 失敗');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleToggleRecordRow = (rowNumber: number): void => {
+    setSelectedRowNumbers((prev) => applyBatchSelection(prev, [rowNumber], 'invert'));
+  };
+
+  const handleToggleGroupOfRows = (targetRowNumbers: number[]): void => {
+    if (targetRowNumbers.length === 0) return;
+    setSelectedRowNumbers((prev) => {
+      const allSelected = targetRowNumbers.every((r) => prev.has(r));
+      return applyBatchSelection(prev, targetRowNumbers, allSelected ? 'deselect' : 'select');
+    });
+  };
+
+  const handleToggleAllVisibleRecords = (): void => {
+    const target = filteredRecordRows.map((r) => r.rowNumber);
+    handleToggleGroupOfRows(target);
+  };
+
+  const handleAddCustomRule = (): void => {
+    if (!workbook) return;
+    const defaultCol = workbook.dbHeaders.includes('姓名')
+      ? '姓名'
+      : (workbook.dbHeaders[0] ?? '組別');
+    setCustomRules((prev) => [
+      ...prev,
+      {
+        id: `rule-${Date.now()}-${prev.length}`,
+        column: defaultCol,
+        operator: 'contains',
+        value: '',
+      },
+    ]);
+    setShowCustomFilterPanel(true);
+  };
+
+  const handleUpdateCustomRule = (
+    id: string,
+    patch: Partial<CustomFilterRule>,
+  ): void => {
+    setCustomRules((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+    );
+  };
+
+  const handleRemoveCustomRule = (id: string): void => {
+    setCustomRules((prev) => prev.filter((r) => r.id !== id));
+  };
 
   const filteredGroups = useMemo(
     () =>
@@ -171,9 +464,27 @@ export default function App(): React.ReactElement {
     [workbook, groupSearch, sectorFilter, categoryFilter],
   );
 
+  const sidebarGroups = useMemo(() => {
+    if (!workbook) return [];
+    const q = sidebarGroupSearch.trim().toLowerCase();
+    return workbook.groups.filter((g) => {
+      if (g.category === '--') return false;
+      if (dbSectorFilter !== 'all' && g.sectorCode !== dbSectorFilter) return false;
+      if (dbCategoryFilter !== 'all' && g.category !== dbCategoryFilter) return false;
+      if (!q) return true;
+      return (
+        g.code.toLowerCase().includes(q) ||
+        g.nameZh.toLowerCase().includes(q) ||
+        g.category.toLowerCase().includes(q)
+      );
+    });
+  }, [workbook, sidebarGroupSearch, dbSectorFilter, dbCategoryFilter]);
+
   const uniqueCategories = useMemo(() => {
     if (!workbook) return [];
-    return Array.from(new Set(workbook.groups.map((g) => g.category).filter(Boolean)));
+    return Array.from(
+      new Set(workbook.groups.map((g) => g.category).filter((c) => c && c !== '--')),
+    );
   }, [workbook]);
 
   const groupCountBySector = useMemo(() => {
@@ -184,6 +495,37 @@ export default function App(): React.ReactElement {
     }
     return counts;
   }, [workbook]);
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (dbSearch.trim() !== '') count++;
+    if (attendanceFilter !== 'all') count++;
+    if (receptionFilter !== 'all') count++;
+    if (flagRaisingFilter !== 'all') count++;
+    if (calcFilter !== 'all') count++;
+    if (dbSectorFilter !== 'all') count++;
+    if (dbCategoryFilter !== 'all') count++;
+    if (dbGroupFilter !== 'all') count++;
+    if (selectionFilter !== 'all') count++;
+    count += customRules.filter(
+      (r) =>
+        r.operator === 'is_empty' ||
+        r.operator === 'is_not_empty' ||
+        r.value.trim() !== '',
+    ).length;
+    return count;
+  }, [
+    dbSearch,
+    attendanceFilter,
+    receptionFilter,
+    flagRaisingFilter,
+    calcFilter,
+    dbSectorFilter,
+    dbCategoryFilter,
+    dbGroupFilter,
+    selectionFilter,
+    customRules,
+  ]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
@@ -198,8 +540,8 @@ export default function App(): React.ReactElement {
       />
 
       {/* Top Navigation Bar */}
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur px-6 py-3.5">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-4">
+      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur px-6 py-3">
+        <div className="mx-auto flex max-w-[1720px] flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-900 text-white shadow-xs">
               <FileSpreadsheet className="h-5 w-5" />
@@ -214,24 +556,55 @@ export default function App(): React.ReactElement {
                 </Badge>
               </div>
               <p className="text-xs text-slate-500">
-                Excel 活動名單與界別/組別資料庫管理系統
+                大型活動名單多維度篩選、批次選取與原結構 Excel 匯出系統
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             {workbook && (
-              <div className="hidden sm:flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
-                <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
-                <span className="font-medium text-slate-800">{workbook.fileName}</span>
-                <span className="text-slate-400">|</span>
-                <span className="text-slate-500">
-                  {workbook.sheetNames.join(' / ')} ({workbook.summary.totalRecords} 筆名單)
-                </span>
-              </div>
+              <>
+                <div className="hidden xl:flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs">
+                  <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                  <span className="font-medium text-slate-800">{workbook.fileName}</span>
+                  <span className="text-slate-300">|</span>
+                  <span className="text-slate-500">
+                    總名單 {workbook.summary.totalRecords} 筆 · 篩選命中{' '}
+                    <strong className="text-slate-900">{filteredRecordRows.length}</strong> 筆 · 已勾選{' '}
+                    <strong className="text-blue-700">{selectedRowNumbers.size}</strong> 筆
+                  </span>
+                </div>
+
+                <Button
+                  variant="default"
+                  size="default"
+                  disabled={isExporting || filteredRecordRows.length === 0}
+                  onClick={() => handleExportExcel('filtered')}
+                  title={`將目前篩選命中的 ${filteredExportSummary.recordCount} 筆名單與 ${filteredExportSummary.sectionCount} 列分組標題匯出為原結構 Excel`}
+                >
+                  <Download className="h-4 w-4" />
+                  匯出篩選結果 ({filteredExportSummary.recordCount} 筆)
+                </Button>
+
+                <Button
+                  variant="secondary"
+                  size="default"
+                  disabled={isExporting || selectedRowNumbers.size === 0}
+                  onClick={() => handleExportExcel('selected')}
+                  title={`僅匯出目前已勾選的 ${selectedExportSummary.recordCount} 筆名單與 ${selectedExportSummary.sectionCount} 列分組標題`}
+                >
+                  <CheckSquare className="h-4 w-4 text-blue-700" />
+                  匯出已勾選 ({selectedExportSummary.recordCount} 筆)
+                </Button>
+              </>
             )}
 
-            <Button onClick={handleImportClick} disabled={isLoading} size="default">
+            <Button
+              variant={workbook ? 'outline' : 'default'}
+              onClick={handleImportClick}
+              disabled={isLoading}
+              size="default"
+            >
               <Upload className="h-4 w-4" />
               {isLoading ? '正在讀取...' : workbook ? '重新匯入 Excel' : '匯入 Excel 檔案'}
             </Button>
@@ -240,11 +613,23 @@ export default function App(): React.ReactElement {
       </header>
 
       {/* Main Content Area */}
-      <main className="mx-auto w-full max-w-[1600px] flex-1 p-6 space-y-6">
+      <main className="mx-auto w-full max-w-[1720px] flex-1 p-5 space-y-5">
         {errorMessage && (
-          <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 flex items-center justify-between">
-            <span>匯入錯誤：{errorMessage}</span>
+          <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700 flex items-center justify-between">
+            <span>錯誤：{errorMessage}</span>
             <Button variant="ghost" size="sm" onClick={() => setErrorMessage(null)}>
+              關閉
+            </Button>
+          </div>
+        )}
+
+        {exportNotice && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800 flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+              {exportNotice}
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => setExportNotice(null)}>
               關閉
             </Button>
           </div>
@@ -258,11 +643,11 @@ export default function App(): React.ReactElement {
                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
                   <FileSpreadsheet className="h-7 w-7" />
                 </div>
-                <CardTitle className="text-xl">匯入 Excel 資料庫以開始檢視</CardTitle>
+                <CardTitle className="text-xl">匯入 Excel 資料庫以開始篩選與匯出</CardTitle>
                 <CardDescription className="max-w-md text-sm leading-relaxed">
                   支援匯入包含 <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-800">DB</code>、
                   <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-800">組別</code>、
-                  <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-800">界別</code> 三層結構之 Excel 活頁簿（如 <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-800">test.xlsx</code>）。
+                  <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-800">界別</code> 三層結構之萬筆名單 Excel 活頁簿（如 <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-slate-800">test.xlsx</code>）。
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col items-center gap-4">
@@ -272,21 +657,21 @@ export default function App(): React.ReactElement {
                 </Button>
                 <div className="grid grid-cols-3 gap-3 w-full max-w-md pt-2 text-left">
                   <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                    <div className="text-xs font-semibold text-slate-800">DB 主名單</div>
+                    <div className="text-xs font-semibold text-slate-800">萬筆高速虛擬表</div>
                     <div className="text-[11px] text-slate-500 mt-0.5">
-                      50 欄位、分組標題列與出席標記解析
+                      50 欄位、多維度篩選、欄位檢視排序與批次勾選
                     </div>
                   </div>
                   <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                    <div className="text-xs font-semibold text-slate-800">組別清單</div>
+                    <div className="text-xs font-semibold text-slate-800">界別與組別導覽</div>
                     <div className="text-[11px] text-slate-500 mt-0.5">
-                      558 個組別代碼與 14 種職務分類篩選
+                      26 個界別、14 種職務分類與 558 個組別樹狀過濾
                     </div>
                   </div>
                   <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
-                    <div className="text-xs font-semibold text-slate-800">界別總覽</div>
+                    <div className="text-xs font-semibold text-slate-800">原結構 Excel 匯出</div>
                     <div className="text-[11px] text-slate-500 mt-0.5">
-                      MA000–MZ000 共 26 個界別統計
+                      自動保留命中名單所屬分組標題列與完整三工作表
                     </div>
                   </div>
                 </div>
@@ -313,7 +698,7 @@ export default function App(): React.ReactElement {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-slate-400">
-                    含 {workbook.summary.sectionCount} 列分組標題分隔列
+                    目前篩選命中 {filteredRecordRows.length} 筆 · 已勾選 {selectedRowNumbers.size} 筆
                   </p>
                 </CardContent>
               </Card>
@@ -381,24 +766,22 @@ export default function App(): React.ReactElement {
               <Card>
                 <CardHeader className="flex flex-row items-center justify-between pb-2">
                   <CardTitle className="text-xs font-medium text-slate-500">
-                    組別與界別規模
+                    預計匯出結構預覽
                   </CardTitle>
                   <Building2 className="h-4 w-4 text-slate-400" />
                 </CardHeader>
                 <CardContent>
-                  <div className="flex items-center gap-3">
-                    <div>
-                      <span className="text-2xl font-bold">{workbook.summary.groupCount}</span>
-                      <span className="ml-1 text-xs text-slate-500">個組別</span>
-                    </div>
-                    <span className="text-slate-300">/</span>
-                    <div>
-                      <span className="text-2xl font-bold">{workbook.summary.sectorCount}</span>
-                      <span className="ml-1 text-xs text-slate-500">個界別</span>
-                    </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="font-semibold text-slate-800">
+                      篩選匯出：{filteredExportSummary.recordCount} 筆名單
+                    </span>
+                    <span className="text-slate-400">
+                      (+{filteredExportSummary.sectionCount} 標題列)
+                    </span>
                   </div>
-                  <p className="mt-1 text-xs text-slate-400">
-                    涵蓋 {uniqueCategories.length} 種職務分類
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    勾選匯出：<strong className="text-blue-700">{selectedExportSummary.recordCount}</strong> 筆名單 (+
+                    {selectedExportSummary.sectionCount} 標題列) · 保留 50 欄與組別/界別表
                   </p>
                 </CardContent>
               </Card>
@@ -409,7 +792,7 @@ export default function App(): React.ReactElement {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <TabsList>
                   <TabsTrigger value="DB">
-                    DB 主名單 ({workbook.summary.totalRecords})
+                    DB 主名單 ({filteredRecordRows.length} / {workbook.summary.totalRecords})
                   </TabsTrigger>
                   <TabsTrigger value="groups">
                     組別 ({workbook.groups.length})
@@ -419,237 +802,776 @@ export default function App(): React.ReactElement {
                   </TabsTrigger>
                 </TabsList>
 
-                {workbook.filePath && (
-                  <span className="text-xs text-slate-400 truncate max-w-xl" title={workbook.filePath}>
-                    檔案路徑：{workbook.filePath}
-                  </span>
-                )}
+                <div className="flex items-center gap-2">
+                  {workbook.filePath && (
+                    <span className="text-xs text-slate-400 truncate max-w-md" title={workbook.filePath}>
+                      來源：{workbook.filePath}
+                    </span>
+                  )}
+                </div>
               </div>
 
-              {/* Tab 1: DB Sheet */}
+              {/* Tab 1: DB Sheet with Split-Pane Sidebar + Filter Builder + Virtualized Table */}
               <TabsContent value="DB">
-                <Card>
-                  <CardHeader className="pb-4 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <CardTitle className="text-base">DB 主名單資料表</CardTitle>
-                        <CardDescription>
-                          目前顯示 {filteredDbRows.length} 列（共 {workbook.dbHeaders.length} 個欄位，已選取顯示{' '}
-                          {visibleDbHeaders.length} 欄）
-                        </CardDescription>
-                      </div>
-
-                      {/* Column Group Selector */}
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-xs text-slate-500 mr-1 flex items-center gap-1">
-                          <FolderKanban className="h-3.5 w-3.5" />
-                          欄位檢視：
-                        </span>
-                        {(
-                          [
-                            ['core', '核心與活動 (15欄)'],
-                            ['contact', '聯絡與地址 (19欄)'],
-                            ['personal', '個人與證件 (19欄)'],
-                            ['all', `完整欄位 (${workbook.dbHeaders.length}欄)`],
-                          ] as const
-                        ).map(([presetKey, label]) => (
+                <div className="flex flex-col lg:flex-row gap-4 items-start">
+                  {/* Left Collapsible Facet Sidebar */}
+                  {showSidebar && (
+                    <Card className="w-full lg:w-72 shrink-0">
+                      <CardHeader className="pb-2.5 px-3.5 pt-3.5">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
+                            <Building2 className="h-4 w-4 text-slate-600" />
+                            階層篩選與整組勾選
+                          </CardTitle>
                           <Button
-                            key={presetKey}
-                            variant={columnPreset === presetKey ? 'default' : 'outline'}
+                            variant="ghost"
                             size="sm"
-                            onClick={() => setColumnPreset(presetKey)}
+                            className="h-7 px-2 text-xs text-slate-500"
+                            onClick={() => setShowSidebar(false)}
+                            title="收合側邊導覽面板"
                           >
-                            {label}
+                            <PanelLeftClose className="h-4 w-4" />
                           </Button>
-                        ))}
-                      </div>
-                    </div>
+                        </div>
 
-                    {/* Filter & Search Bar */}
-                    <div className="flex flex-wrap items-center gap-3 pt-1">
-                      <div className="relative flex-1 min-w-[240px] max-w-sm">
-                        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
-                        <Input
-                          placeholder="搜尋組別代碼 (如 MA002、MZ001)、姓名、備註..."
-                          value={dbSearch}
-                          onChange={(e) => setDbSearch(e.target.value)}
-                          className="pl-8"
-                        />
-                      </div>
+                        {/* Sidebar mode switch */}
+                        <div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1 mt-2">
+                          <button
+                            type="button"
+                            onClick={() => setSidebarTab('sectors')}
+                            className={`rounded-md py-1 text-xs font-medium transition-colors ${
+                              sidebarTab === 'sectors'
+                                ? 'bg-white text-slate-900 shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            界別 ({workbook.sectors.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSidebarTab('categories')}
+                            className={`rounded-md py-1 text-xs font-medium transition-colors ${
+                              sidebarTab === 'categories'
+                                ? 'bg-white text-slate-900 shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            分類 ({uniqueCategories.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSidebarTab('groups')}
+                            className={`rounded-md py-1 text-xs font-medium transition-colors ${
+                              sidebarTab === 'groups'
+                                ? 'bg-white text-slate-900 shadow-2xs'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            組別
+                          </button>
+                        </div>
+                      </CardHeader>
 
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs text-slate-500 flex items-center gap-1">
-                          <Filter className="h-3.5 w-3.5" />
-                          出席篩選：
-                        </span>
-                        <Button
-                          variant={attendanceFilter === 'all' ? 'secondary' : 'outline'}
-                          size="sm"
-                          onClick={() => setAttendanceFilter('all')}
-                        >
-                          全部 ({workbook.summary.totalRecords})
-                        </Button>
-                        <Button
-                          variant={attendanceFilter === 'Y' ? 'secondary' : 'outline'}
-                          size="sm"
-                          onClick={() => setAttendanceFilter('Y')}
-                        >
-                          出席 Y ({workbook.summary.attendingCount})
-                        </Button>
-                        <Button
-                          variant={attendanceFilter === '不出席活動' ? 'secondary' : 'outline'}
-                          size="sm"
-                          onClick={() => setAttendanceFilter('不出席活動')}
-                        >
-                          不出席 ({workbook.summary.notAttendingCount})
-                        </Button>
-                      </div>
+                      <CardContent className="px-3 pb-3 pt-1">
+                        {sidebarTab === 'sectors' && (
+                          <div className="max-h-[560px] overflow-y-auto space-y-1 pr-1">
+                            <button
+                              type="button"
+                              onClick={() => setDbSectorFilter('all')}
+                              className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition-colors ${
+                                dbSectorFilter === 'all'
+                                  ? 'bg-slate-900 text-white font-medium'
+                                  : 'hover:bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              <span>全部界別</span>
+                              <span className="font-mono text-[11px] opacity-80">
+                                {workbook.summary.totalRecords} 筆
+                              </span>
+                            </button>
 
-                      <Button
-                        variant={showSectionHeaders ? 'secondary' : 'outline'}
-                        size="sm"
-                        onClick={() => setShowSectionHeaders((prev) => !prev)}
-                      >
-                        {showSectionHeaders ? '✓ 顯示分組標題列' : '隱藏分組標題列'}
-                      </Button>
-                    </div>
-                  </CardHeader>
-
-                  <CardContent className="p-0">
-                    <div className="max-h-[600px] overflow-auto border-t border-slate-200">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-14 text-center">列號</TableHead>
-                            {visibleDbHeaders.map((header) => (
-                              <TableHead key={header}>{header}</TableHead>
-                            ))}
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {filteredDbRows.length === 0 ? (
-                            <TableRow>
-                              <TableCell
-                                colSpan={visibleDbHeaders.length + 1}
-                                className="h-24 text-center text-slate-400"
-                              >
-                                沒有符合篩選條件的資料列
-                              </TableCell>
-                            </TableRow>
-                          ) : (
-                            filteredDbRows.map((row) => {
-                              if (row.kind === 'section') {
-                                const isTopSector = row.sectionCode?.endsWith('000') ?? false;
-                                return (
-                                  <TableRow
-                                    key={`section-${row.rowNumber}`}
-                                    className={
-                                      isTopSector
-                                        ? 'bg-slate-200/80 hover:bg-slate-200 font-semibold'
-                                        : 'bg-slate-100/90 hover:bg-slate-100 font-medium'
-                                    }
-                                  >
-                                    <TableCell className="text-center font-mono text-[11px] text-slate-500">
-                                      #{row.rowNumber}
-                                    </TableCell>
-                                    <TableCell colSpan={visibleDbHeaders.length} className="py-2">
-                                      <div className="flex flex-wrap items-center gap-2">
-                                        <Badge variant={isTopSector ? 'default' : 'outline'}>
-                                          {row.sectionCode}
-                                        </Badge>
-                                        <span className="text-slate-900">
-                                          {row.sectionTitle || row.values['姓名']}
-                                        </span>
-                                        {row.values['Remark'] && (
-                                          <span className="ml-2 rounded bg-amber-50 border border-amber-200 px-2 py-0.5 text-[11px] font-normal text-amber-800 whitespace-pre-wrap">
-                                            備註：{row.values['Remark']}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </TableCell>
-                                  </TableRow>
-                                );
-                              }
+                            {workbook.sectors.map((sec) => {
+                              const totalInSec = totalFacetCounts?.bySector.get(sec.code) ?? 0;
+                              const filteredInSec = filteredFacetCounts.bySector.get(sec.code) ?? 0;
+                              const secRowNums = recordRowsByFacet.bySector.get(sec.code) ?? [];
+                              const allSecChecked =
+                                secRowNums.length > 0 &&
+                                secRowNums.every((r) => selectedRowNumbers.has(r));
+                              const someSecChecked =
+                                !allSecChecked &&
+                                secRowNums.some((r) => selectedRowNumbers.has(r));
+                              const isActive = dbSectorFilter === sec.code;
 
                               return (
-                                <TableRow key={`row-${row.rowNumber}`}>
-                                  <TableCell className="text-center font-mono text-[11px] text-slate-400">
-                                    {row.rowNumber}
-                                  </TableCell>
-                                  {visibleDbHeaders.map((header) => {
-                                    const val = row.values[header] ?? '';
-
-                                    if (header === '出席活動') {
-                                      return (
-                                        <TableCell key={header}>
-                                          {val === 'Y' ? (
-                                            <Badge variant="success" className="gap-1">
-                                              <CheckCircle2 className="h-3 w-3" /> 出席 (Y)
-                                            </Badge>
-                                          ) : val === '不出席活動' ? (
-                                            <Badge variant="destructive" className="gap-1">
-                                              <XCircle className="h-3 w-3" /> 不出席活動
-                                            </Badge>
-                                          ) : (
-                                            val
-                                          )}
-                                        </TableCell>
-                                      );
+                                <div
+                                  key={sec.code}
+                                  className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                                    isActive
+                                      ? 'bg-blue-50 border border-blue-200 text-blue-950 font-medium'
+                                      : 'hover:bg-slate-100 text-slate-700'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={allSecChecked}
+                                    disabled={secRowNums.length === 0}
+                                    ref={(el) => {
+                                      if (el) el.indeterminate = someSecChecked;
+                                    }}
+                                    onChange={() => handleToggleGroupOfRows(secRowNums)}
+                                    title={`勾選 / 取消 ${sec.code} 全界別 (${secRowNums.length} 筆)`}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 cursor-pointer shrink-0"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setDbSectorFilter(isActive ? 'all' : sec.code)
                                     }
-
-                                    if (header === '組別' && val) {
-                                      return (
-                                        <TableCell key={header}>
-                                          <Badge variant="outline" className="font-mono">
-                                            {val}
-                                          </Badge>
-                                        </TableCell>
-                                      );
-                                    }
-
-                                    if (header === '計算') {
-                                      return (
-                                        <TableCell key={header} className="text-center font-mono">
-                                          {val === '1' ? (
-                                            <Badge variant="secondary">1</Badge>
-                                          ) : (
-                                            <span className="text-slate-400">{val || '0'}</span>
-                                          )}
-                                        </TableCell>
-                                      );
-                                    }
-
-                                    if (header === '酒會' || header === '升旗') {
-                                      return (
-                                        <TableCell key={header} className="text-center font-mono">
-                                          {val ? (
-                                            <Badge variant="warning">{val}</Badge>
-                                          ) : (
-                                            <span className="text-slate-300">-</span>
-                                          )}
-                                        </TableCell>
-                                      );
-                                    }
-
-                                    return (
-                                      <TableCell
-                                        key={header}
-                                        className="max-w-xs truncate"
-                                        title={val}
-                                      >
-                                        {val || <span className="text-slate-300">-</span>}
-                                      </TableCell>
-                                    );
-                                  })}
-                                </TableRow>
+                                    className="flex-1 flex items-center justify-between text-left truncate gap-1"
+                                  >
+                                    <span className="truncate">
+                                      <span className="font-mono font-semibold mr-1">{sec.code}</span>
+                                      <span className="text-slate-600">{sec.nameZh || ''}</span>
+                                    </span>
+                                    <span className="font-mono text-[11px] text-slate-500 shrink-0">
+                                      {filteredInSec}/{totalInSec}
+                                    </span>
+                                  </button>
+                                </div>
                               );
-                            })
+                            })}
+                          </div>
+                        )}
+
+                        {sidebarTab === 'categories' && (
+                          <div className="max-h-[560px] overflow-y-auto space-y-1 pr-1">
+                            <button
+                              type="button"
+                              onClick={() => setDbCategoryFilter('all')}
+                              className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition-colors ${
+                                dbCategoryFilter === 'all'
+                                  ? 'bg-slate-900 text-white font-medium'
+                                  : 'hover:bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              <span>全部職務分類</span>
+                              <span className="font-mono text-[11px] opacity-80">
+                                {workbook.summary.totalRecords} 筆
+                              </span>
+                            </button>
+
+                            {uniqueCategories.map((cat) => {
+                              const totalInCat = totalFacetCounts?.byCategory.get(cat) ?? 0;
+                              const filteredInCat = filteredFacetCounts.byCategory.get(cat) ?? 0;
+                              const catRowNums = recordRowsByFacet.byCategory.get(cat) ?? [];
+                              const allCatChecked =
+                                catRowNums.length > 0 &&
+                                catRowNums.every((r) => selectedRowNumbers.has(r));
+                              const someCatChecked =
+                                !allCatChecked &&
+                                catRowNums.some((r) => selectedRowNumbers.has(r));
+                              const isActive = dbCategoryFilter === cat;
+
+                              return (
+                                <div
+                                  key={cat}
+                                  className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                                    isActive
+                                      ? 'bg-blue-50 border border-blue-200 text-blue-950 font-medium'
+                                      : 'hover:bg-slate-100 text-slate-700'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={allCatChecked}
+                                    disabled={catRowNums.length === 0}
+                                    ref={(el) => {
+                                      if (el) el.indeterminate = someCatChecked;
+                                    }}
+                                    onChange={() => handleToggleGroupOfRows(catRowNums)}
+                                    title={`勾選 / 取消「${cat}」分類 (${catRowNums.length} 筆)`}
+                                    className="h-3.5 w-3.5 rounded border-slate-300 cursor-pointer shrink-0"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setDbCategoryFilter(isActive ? 'all' : cat)
+                                    }
+                                    className="flex-1 flex items-center justify-between text-left truncate gap-1"
+                                  >
+                                    <span className="truncate">{cat}</span>
+                                    <span className="font-mono text-[11px] text-slate-500 shrink-0">
+                                      {filteredInCat}/{totalInCat}
+                                    </span>
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        {sidebarTab === 'groups' && (
+                          <div className="space-y-2">
+                            <div className="relative">
+                              <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-slate-400" />
+                              <Input
+                                placeholder="搜尋組別代碼或名稱..."
+                                value={sidebarGroupSearch}
+                                onChange={(e) => setSidebarGroupSearch(e.target.value)}
+                                className="h-7 pl-7 text-xs"
+                              />
+                            </div>
+                            <div className="max-h-[520px] overflow-y-auto space-y-1 pr-1">
+                              <button
+                                type="button"
+                                onClick={() => setDbGroupFilter('all')}
+                                className={`w-full flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs transition-colors ${
+                                  dbGroupFilter === 'all'
+                                    ? 'bg-slate-900 text-white font-medium'
+                                    : 'hover:bg-slate-100 text-slate-700'
+                                }`}
+                              >
+                                <span>全部組別</span>
+                                <span className="font-mono text-[11px] opacity-80">
+                                  {sidebarGroups.length} 組
+                                </span>
+                              </button>
+
+                              {sidebarGroups.map((grp) => {
+                                const totalInGrp = totalFacetCounts?.byGroup.get(grp.code) ?? 0;
+                                const filteredInGrp = filteredFacetCounts.byGroup.get(grp.code) ?? 0;
+                                const grpRowNums = recordRowsByFacet.byGroup.get(grp.code) ?? [];
+                                const allGrpChecked =
+                                  grpRowNums.length > 0 &&
+                                  grpRowNums.every((r) => selectedRowNumbers.has(r));
+                                const someGrpChecked =
+                                  !allGrpChecked &&
+                                  grpRowNums.some((r) => selectedRowNumbers.has(r));
+                                const isActive = dbGroupFilter === grp.code;
+
+                                return (
+                                  <div
+                                    key={`${grp.id}-${grp.code}`}
+                                    className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+                                      isActive
+                                        ? 'bg-blue-50 border border-blue-200 text-blue-950 font-medium'
+                                        : 'hover:bg-slate-100 text-slate-700'
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={allGrpChecked}
+                                      disabled={grpRowNums.length === 0}
+                                      ref={(el) => {
+                                        if (el) el.indeterminate = someGrpChecked;
+                                      }}
+                                      onChange={() => handleToggleGroupOfRows(grpRowNums)}
+                                      title={`勾選 / 取消組別 ${grp.code} (${grpRowNums.length} 筆)`}
+                                      className="h-3.5 w-3.5 rounded border-slate-300 cursor-pointer shrink-0"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setDbGroupFilter(isActive ? 'all' : grp.code)
+                                      }
+                                      className="flex-1 flex items-center justify-between text-left truncate gap-1"
+                                    >
+                                      <span className="truncate">
+                                        <span className="font-mono font-semibold mr-1">
+                                          {grp.code}
+                                        </span>
+                                        <span className="text-slate-500">
+                                          {grp.nameZh || grp.category}
+                                        </span>
+                                      </span>
+                                      <span className="font-mono text-[11px] text-slate-500 shrink-0">
+                                        {filteredInGrp}/{totalInGrp}
+                                      </span>
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Main Right Table & Filter Card */}
+                  <Card className="flex-1 min-w-0 w-full">
+                    <CardHeader className="pb-3 space-y-3">
+                      {/* Row 1: Title, Sidebar toggle, Column Presets */}
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          {!showSidebar && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setShowSidebar(true)}
+                              title="展開界別/組別導覽面板"
+                            >
+                              <PanelLeftOpen className="h-4 w-4" />
+                              展開界別導覽
+                            </Button>
                           )}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </CardContent>
-                </Card>
+                          <div>
+                            <CardTitle className="text-base">DB 主名單資料表</CardTitle>
+                            <CardDescription>
+                              符合條件共 <strong>{filteredRecordRows.length}</strong> 筆人員記錄（表格顯示{' '}
+                              {filteredDbRows.length} 列，檢視 {visibleDbHeaders.length} /{' '}
+                              {workbook.dbHeaders.length} 欄；匯出時完整保留 50 欄）
+                            </CardDescription>
+                          </div>
+                        </div>
+
+                        {/* Column Group Selector */}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-xs text-slate-500 mr-1 flex items-center gap-1">
+                            <FolderKanban className="h-3.5 w-3.5" />
+                            欄位檢視：
+                          </span>
+                          {(
+                            [
+                              ['core', '核心與活動 (15欄)'],
+                              ['contact', '聯絡與地址 (19欄)'],
+                              ['personal', '個人與證件 (19欄)'],
+                              ['all', `完整欄位 (${workbook.dbHeaders.length}欄)`],
+                            ] as const
+                          ).map(([presetKey, label]) => (
+                            <Button
+                              key={presetKey}
+                              variant={columnPreset === presetKey ? 'default' : 'outline'}
+                              size="sm"
+                              onClick={() => setColumnPreset(presetKey)}
+                            >
+                              {label}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Row 2: Search + Quick Dimension Filters */}
+                      <div className="flex flex-wrap items-center gap-2.5 pt-1">
+                        <div className="relative flex-1 min-w-[260px] max-w-md">
+                          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                          <Input
+                            placeholder="多關鍵字搜尋 (空白=AND，|=OR，如：MA002 Y | MZ001)..."
+                            value={dbSearch}
+                            onChange={(e) => setDbSearch(e.target.value)}
+                            className="pl-8"
+                          />
+                        </div>
+
+                        {/* Attendance Filter */}
+                        <div className="flex items-center gap-1.5">
+                          <label className="text-xs text-slate-500">出席：</label>
+                          <select
+                            value={attendanceFilter}
+                            onChange={(e) =>
+                              setAttendanceFilter(
+                                e.target.value as 'all' | 'Y' | '不出席活動' | 'blank',
+                              )
+                            }
+                            className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                          >
+                            <option value="all">全部 ({workbook.summary.totalRecords})</option>
+                            <option value="Y">出席 Y ({workbook.summary.attendingCount})</option>
+                            <option value="不出席活動">
+                              不出席 ({workbook.summary.notAttendingCount})
+                            </option>
+                            <option value="blank">未填空白</option>
+                          </select>
+                        </div>
+
+                        {/* Reception % Filter */}
+                        <div className="flex items-center gap-1.5">
+                          <label className="text-xs text-slate-500">酒會：</label>
+                          <select
+                            value={receptionFilter}
+                            onChange={(e) =>
+                              setReceptionFilter(e.target.value as 'all' | '%' | 'blank')
+                            }
+                            className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                          >
+                            <option value="all">全部</option>
+                            <option value="%">酒會 % ({workbook.summary.receptionCount})</option>
+                            <option value="blank">無標記</option>
+                          </select>
+                        </div>
+
+                        {/* Flag Raising * Filter */}
+                        <div className="flex items-center gap-1.5">
+                          <label className="text-xs text-slate-500">升旗：</label>
+                          <select
+                            value={flagRaisingFilter}
+                            onChange={(e) =>
+                              setFlagRaisingFilter(e.target.value as 'all' | '*' | 'blank')
+                            }
+                            className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                          >
+                            <option value="all">全部</option>
+                            <option value="*">升旗 * ({workbook.summary.flagRaisingCount})</option>
+                            <option value="blank">無標記</option>
+                          </select>
+                        </div>
+
+                        {/* Headcount Calc Filter */}
+                        <div className="flex items-center gap-1.5">
+                          <label className="text-xs text-slate-500">計算：</label>
+                          <select
+                            value={calcFilter}
+                            onChange={(e) =>
+                              setCalcFilter(e.target.value as 'all' | '1' | '0')
+                            }
+                            className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                          >
+                            <option value="all">全部</option>
+                            <option value="1">計算=1 ({workbook.summary.countedHeadcount})</option>
+                            <option value="0">不計算=0</option>
+                          </select>
+                        </div>
+
+                        {/* Selection State Filter */}
+                        <div className="flex items-center gap-1.5">
+                          <label className="text-xs text-slate-500">勾選狀態：</label>
+                          <select
+                            value={selectionFilter}
+                            onChange={(e) =>
+                              setSelectionFilter(
+                                e.target.value as 'all' | 'selected' | 'unselected',
+                              )
+                            }
+                            className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                          >
+                            <option value="all">全部顯示</option>
+                            <option value="selected">僅看已勾選 ({selectedRowNumbers.size})</option>
+                            <option value="unselected">僅看未勾選</option>
+                          </select>
+                        </div>
+
+                        <Button
+                          variant={showCustomFilterPanel || customRules.length > 0 ? 'secondary' : 'outline'}
+                          size="sm"
+                          onClick={() => setShowCustomFilterPanel((prev) => !prev)}
+                        >
+                          <SlidersHorizontal className="h-3.5 w-3.5" />
+                          自訂欄位條件 {customRules.length > 0 ? `(${customRules.length})` : ''}
+                        </Button>
+
+                        <Button
+                          variant={showSectionHeaders ? 'secondary' : 'outline'}
+                          size="sm"
+                          onClick={() => setShowSectionHeaders((prev) => !prev)}
+                          disabled={sort.column !== null}
+                        >
+                          {showSectionHeaders ? '✓ 顯示分組標題列' : '隱藏分組標題列'}
+                        </Button>
+
+                        {activeFilterCount > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={resetAllDbFilters}
+                            className="text-rose-600 hover:text-rose-700 hover:bg-rose-50"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            清除篩選 ({activeFilterCount})
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Active Facet Pills */}
+                      {(dbSectorFilter !== 'all' ||
+                        dbCategoryFilter !== 'all' ||
+                        dbGroupFilter !== 'all') && (
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <span className="text-xs text-slate-500 flex items-center gap-1">
+                            <Filter className="h-3 w-3" />
+                            目前鎖定階層：
+                          </span>
+                          {dbSectorFilter !== 'all' && (
+                            <Badge variant="default" className="gap-1.5">
+                              界別：{dbSectorFilter}
+                              <button
+                                type="button"
+                                onClick={() => setDbSectorFilter('all')}
+                                className="ml-1 hover:opacity-75"
+                              >
+                                ×
+                              </button>
+                            </Badge>
+                          )}
+                          {dbCategoryFilter !== 'all' && (
+                            <Badge variant="default" className="gap-1.5">
+                              職務分類：{dbCategoryFilter}
+                              <button
+                                type="button"
+                                onClick={() => setDbCategoryFilter('all')}
+                                className="ml-1 hover:opacity-75"
+                              >
+                                ×
+                              </button>
+                            </Badge>
+                          )}
+                          {dbGroupFilter !== 'all' && (
+                            <Badge variant="default" className="gap-1.5">
+                              組別：{dbGroupFilter}
+                              <button
+                                type="button"
+                                onClick={() => setDbGroupFilter('all')}
+                                className="ml-1 hover:opacity-75"
+                              >
+                                ×
+                              </button>
+                            </Badge>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Custom Multi-Column Filter Builder Panel */}
+                      {showCustomFilterPanel && (
+                        <div className="rounded-lg border border-slate-200 bg-slate-50/90 p-3 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                              <SlidersHorizontal className="h-3.5 w-3.5 text-slate-500" />
+                              <span>自訂多欄位複合條件（支援全部 50 個欄位）</span>
+                              <div className="flex items-center rounded-md border border-slate-200 bg-white p-0.5 ml-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setCustomRulesMode('AND')}
+                                  className={`px-2 py-0.5 text-[11px] rounded ${
+                                    customRulesMode === 'AND'
+                                      ? 'bg-slate-900 text-white'
+                                      : 'text-slate-600'
+                                  }`}
+                                >
+                                  AND (滿足全部)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setCustomRulesMode('OR')}
+                                  className={`px-2 py-0.5 text-[11px] rounded ${
+                                    customRulesMode === 'OR'
+                                      ? 'bg-slate-900 text-white'
+                                      : 'text-slate-600'
+                                  }`}
+                                >
+                                  OR (滿足任一)
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <Button variant="outline" size="sm" onClick={handleAddCustomRule}>
+                                <Plus className="h-3.5 w-3.5" />
+                                新增欄位條件
+                              </Button>
+                              {customRules.length > 0 && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setCustomRules([])}
+                                  className="text-slate-500"
+                                >
+                                  清空條件
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+
+                          {customRules.length === 0 ? (
+                            <p className="text-xs text-slate-400">
+                              尚未設定自訂欄位條件。點擊「新增欄位條件」可針對職位、部門/機構、手機、地址、不出席原因等任意欄位進行進階篩選。
+                            </p>
+                          ) : (
+                            <div className="space-y-2">
+                              {customRules.map((rule, idx) => {
+                                const needsValue =
+                                  rule.operator !== 'is_empty' && rule.operator !== 'is_not_empty';
+                                return (
+                                  <div
+                                    key={rule.id}
+                                    className="flex flex-wrap items-center gap-2 text-xs"
+                                  >
+                                    <span className="w-10 text-right font-mono text-slate-400">
+                                      {idx === 0 ? '條件' : customRulesMode}
+                                    </span>
+                                    <select
+                                      value={rule.column}
+                                      onChange={(e) =>
+                                        handleUpdateCustomRule(rule.id, { column: e.target.value })
+                                      }
+                                      className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                                    >
+                                      {workbook.dbHeaders.map((h) => (
+                                        <option key={h} value={h}>
+                                          {h}
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    <select
+                                      value={rule.operator}
+                                      onChange={(e) =>
+                                        handleUpdateCustomRule(rule.id, {
+                                          operator: e.target.value as CustomFilterOperator,
+                                        })
+                                      }
+                                      className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                                    >
+                                      {(
+                                        Object.entries(OPERATOR_LABELS) as [
+                                          CustomFilterOperator,
+                                          string,
+                                        ][]
+                                      ).map(([opKey, opLabel]) => (
+                                        <option key={opKey} value={opKey}>
+                                          {opLabel}
+                                        </option>
+                                      ))}
+                                    </select>
+
+                                    {needsValue && (
+                                      <Input
+                                        placeholder="輸入比對內容..."
+                                        value={rule.value}
+                                        onChange={(e) =>
+                                          handleUpdateCustomRule(rule.id, { value: e.target.value })
+                                        }
+                                        className="h-8 w-56 text-xs bg-white"
+                                      />
+                                    )}
+
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleRemoveCustomRule(rule.id)}
+                                      className="h-8 px-2 text-slate-400 hover:text-rose-600"
+                                      title="移除此條件"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Row 3: Batch Selection Toolbar & Sort Status Indicator */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium text-slate-700">
+                            批次選取（已勾選 <strong className="text-blue-700">{selectedRowNumbers.size}</strong> 筆）：
+                          </span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            disabled={filteredRecordRows.length === 0}
+                            onClick={() =>
+                              setSelectedRowNumbers((prev) =>
+                                applyBatchSelection(
+                                  prev,
+                                  filteredRecordRows.map((r) => r.rowNumber),
+                                  'select',
+                                ),
+                              )
+                            }
+                          >
+                            全選目前篩選 ({filteredRecordRows.length})
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            disabled={filteredRecordRows.length === 0}
+                            onClick={() =>
+                              setSelectedRowNumbers((prev) =>
+                                applyBatchSelection(
+                                  prev,
+                                  filteredRecordRows.map((r) => r.rowNumber),
+                                  'deselect',
+                                ),
+                              )
+                            }
+                          >
+                            取消目前篩選
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            disabled={filteredRecordRows.length === 0}
+                            onClick={() =>
+                              setSelectedRowNumbers((prev) =>
+                                applyBatchSelection(
+                                  prev,
+                                  filteredRecordRows.map((r) => r.rowNumber),
+                                  'invert',
+                                ),
+                              )
+                            }
+                          >
+                            反選目前篩選
+                          </Button>
+                          {selectedRowNumbers.size > 0 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs text-rose-600 hover:text-rose-700"
+                              onClick={() => setSelectedRowNumbers(new Set())}
+                            >
+                              清空全部已選
+                            </Button>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {sort.column ? (
+                            <div className="flex items-center gap-2 rounded bg-blue-50 border border-blue-200 px-2.5 py-1 text-blue-900">
+                              <ArrowUpDown className="h-3.5 w-3.5 text-blue-600" />
+                              <span>
+                                檢視排序：<strong>{sort.column}</strong> (
+                                {sort.direction === 'asc' ? '升冪 ▲' : '降冪 ▼'}
+                                ) · 匯出仍維持原檔組別與列順序
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setSort({ column: null, direction: 'asc' })}
+                                className="ml-1 underline font-medium hover:text-blue-700"
+                              >
+                                恢復原檔順序
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">
+                              提示：點擊任意欄位標題可切換升冪/降冪排序檢視
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </CardHeader>
+
+                    <CardContent className="p-0">
+                      <VirtualizedDbTable
+                        rows={filteredDbRows}
+                        allRows={workbook.dbRows}
+                        visibleHeaders={visibleDbHeaders}
+                        selectedRowNumbers={selectedRowNumbers}
+                        sort={sort}
+                        onToggleSort={(col) => setSort((prev) => getNextSortState(prev, col))}
+                        onToggleRecordRow={handleToggleRecordRow}
+                        onToggleSectionRows={(_secRow, targetRows) =>
+                          handleToggleGroupOfRows(targetRows)
+                        }
+                        onToggleAllVisibleRecords={handleToggleAllVisibleRecords}
+                      />
+                    </CardContent>
+                  </Card>
+                </div>
               </TabsContent>
 
               {/* Tab 2: 組別 Sheet */}
@@ -659,7 +1581,7 @@ export default function App(): React.ReactElement {
                     <div>
                       <CardTitle className="text-base">組別定義表 (組別)</CardTitle>
                       <CardDescription>
-                        顯示 {filteredGroups.length} / {workbook.groups.length} 個組別
+                        顯示 {filteredGroups.length} / {workbook.groups.length} 個組別（匯出時將完整保留此工作表）
                       </CardDescription>
                     </div>
 
@@ -757,7 +1679,7 @@ export default function App(): React.ReactElement {
                   <CardHeader className="pb-4">
                     <CardTitle className="text-base">界別總覽表 (界別)</CardTitle>
                     <CardDescription>
-                      共 {workbook.sectors.length} 個頂層界別（MA000 – MZ000）
+                      共 {workbook.sectors.length} 個頂層界別（MA000 – MZ000，匯出時將完整保留此工作表）
                     </CardDescription>
                   </CardHeader>
 

@@ -3,7 +3,13 @@ import path from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import pkg from '../../package.json';
 import { loadWindowContent, resolveAppPaths } from '../../electron/windowLoader';
-import { APP_VERSION, formatPlatformLabel, getGreetingMessage } from '../App';
+import {
+  APP_VERSION,
+  applyBatchSelection,
+  formatPlatformLabel,
+  getGreetingMessage,
+  getNextSortState,
+} from '../App';
 import { computeVirtualWindow } from '../components/VirtualizedDbTable';
 
 describe('Super Portable CRM Hello World', () => {
@@ -97,5 +103,23 @@ describe('Super Portable CRM Hello World', () => {
     expect(bottomWin.endIndex).toBe(12000);
     expect(bottomWin.bottomSpacerHeight).toBe(0);
     expect(bottomWin.startIndex).toBeLessThanOrEqual(12000);
+  });
+
+  test('applyBatchSelection and getNextSortState handle selection operations and 3-state column sort cycling', () => {
+    const initial = new Set<number>([5, 6]);
+    const target = [6, 7, 8];
+
+    expect(Array.from(applyBatchSelection(initial, target, 'select'))).toEqual([5, 6, 7, 8]);
+    expect(Array.from(applyBatchSelection(initial, target, 'deselect'))).toEqual([5]);
+    expect(Array.from(applyBatchSelection(initial, target, 'invert'))).toEqual([5, 7, 8]);
+    expect(Array.from(applyBatchSelection(initial, target, 'clear'))).toEqual([]);
+
+    const s0 = { column: null, direction: 'asc' as const };
+    const s1 = getNextSortState(s0, '姓名');
+    expect(s1).toEqual({ column: '姓名', direction: 'asc' });
+    const s2 = getNextSortState(s1, '姓名');
+    expect(s2).toEqual({ column: '姓名', direction: 'desc' });
+    const s3 = getNextSortState(s2, '姓名');
+    expect(s3).toEqual({ column: null, direction: 'asc' });
   });
 });
