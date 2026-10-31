@@ -4,6 +4,7 @@ import { describe, expect, test } from 'bun:test';
 import pkg from '../../package.json';
 import { loadWindowContent, resolveAppPaths } from '../../electron/windowLoader';
 import { APP_VERSION, formatPlatformLabel, getGreetingMessage } from '../App';
+import { computeVirtualWindow } from '../components/VirtualizedDbTable';
 
 describe('Super Portable CRM Hello World', () => {
   test('getGreetingMessage returns expected Hello World greeting', () => {
@@ -73,5 +74,28 @@ describe('Super Portable CRM Hello World', () => {
     );
     expect(mainSource).not.toContain('__dirname');
     expect(mainSource).toContain('app.getAppPath()');
+    expect(mainSource).toContain('excel:save-file');
+  });
+
+  test('computeVirtualWindow calculates safe start/end indices and spacer heights for 0, small, and 10,000+ rows', () => {
+    const emptyWin = computeVirtualWindow(0, 600, 40, 0, 10);
+    expect(emptyWin).toEqual({
+      startIndex: 0,
+      endIndex: 0,
+      topSpacerHeight: 0,
+      bottomSpacerHeight: 0,
+    });
+
+    const midWin = computeVirtualWindow(4000, 600, 40, 12000, 10);
+    expect(midWin.startIndex).toBe(90);
+    expect(midWin.endIndex).toBe(125);
+    expect(midWin.topSpacerHeight).toBe(90 * 40);
+    expect(midWin.bottomSpacerHeight).toBe((12000 - 125) * 40);
+
+    // Scrolled past bottom boundary safety check
+    const bottomWin = computeVirtualWindow(999999, 600, 40, 12000, 10);
+    expect(bottomWin.endIndex).toBe(12000);
+    expect(bottomWin.bottomSpacerHeight).toBe(0);
+    expect(bottomWin.startIndex).toBeLessThanOrEqual(12000);
   });
 });

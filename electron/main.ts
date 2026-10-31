@@ -63,6 +63,27 @@ app.whenReady().then(() => {
     };
   });
 
+  ipcMain.handle(
+    'excel:save-file',
+    async (_event, payload: { defaultFileName: string; buffer: Uint8Array }) => {
+      const result = await dialog.showSaveDialog({
+        title: '儲存匯出的 Excel 檔案',
+        defaultPath: payload.defaultFileName,
+        filters: [{ name: 'Excel 活頁簿 (*.xlsx)', extensions: ['xlsx'] }],
+      });
+
+      if (result.canceled || !result.filePath) {
+        return { canceled: true };
+      }
+
+      await fs.writeFile(result.filePath, Buffer.from(payload.buffer));
+      return {
+        canceled: false,
+        filePath: result.filePath,
+      };
+    },
+  );
+
   createWindow();
 
   app.on('activate', () => {

@@ -17,6 +17,16 @@ export interface ExcelOpenFileResult {
   buffer?: Uint8Array;
 }
 
+export interface ExcelSaveFilePayload {
+  defaultFileName: string;
+  buffer: Uint8Array;
+}
+
+export interface ExcelSaveFileResult {
+  canceled: boolean;
+  filePath?: string;
+}
+
 export interface ElectronAPI {
   platform: string;
   arch: string;
@@ -27,6 +37,7 @@ export interface ElectronAPI {
   };
   getAppInfo: () => Promise<AppRuntimeInfo>;
   openExcelFile?: () => Promise<ExcelOpenFileResult>;
+  saveExcelFile?: (payload: ExcelSaveFilePayload) => Promise<ExcelSaveFileResult>;
 }
 
 declare global {
