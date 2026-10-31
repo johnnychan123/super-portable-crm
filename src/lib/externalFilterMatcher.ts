@@ -16,6 +16,17 @@ export interface ExternalMatchKeyOption {
   columns: string[];
 }
 
+export interface GroupMatchOverride {
+  id: string;
+  groupCode: string;
+  matchKey: string;
+}
+
+export interface ExternalFilterMatchConfig {
+  defaultMatchKey: string;
+  groupOverrides?: ReadonlyArray<GroupMatchOverride>;
+}
+
 export interface ExternalFilterMatchResult {
   matchKey: string;
   resolvedKeyColumns: string[];
@@ -205,6 +216,60 @@ export function resolveAutoMatchKeyColumns(
   return sheet.sharedHeaders.length > 0 ? [sheet.sharedHeaders[0]] : [];
 }
 
+export function getGlobalMatchKeyOptions(dbHeaders: string[]): ExternalMatchKeyOption[] {
+  const headerSet = new Set(dbHeaders);
+  const options: ExternalMatchKeyOption[] = [
+    {
+      key: 'auto',
+      label: '自動偵測 (Pf.ID → PID+組別 → PID → 組別+姓名 → 姓名)',
+      columns: [],
+    },
+  ];
+
+  if (headerSet.has('PID') && headerSet.has('組別')) {
+    options.push({
+      key: 'PID+組別',
+      label: '複合欄：PID + 組別',
+      columns: ['PID', '組別'],
+    });
+  }
+  if (headerSet.has('組別') && headerSet.has('姓名')) {
+    options.push({
+      key: '組別+姓名',
+      label: '複合欄：組別 + 姓名',
+      columns: ['組別', '姓名'],
+    });
+  }
+
+  for (const col of dbHeaders) {
+    options.push({
+      key: col,
+      label: `單一欄：${col}`,
+      columns: [col],
+    });
+  }
+
+  return options;
+}
+
+export function resolveMatchKeyColumns(
+  matchKey: string,
+  sheet: ParsedExternalFilterSheet,
+  dbRows: DbRowItem[],
+): string[] {
+  const sharedSet = new Set(sheet.sharedHeaders);
+  if (matchKey === 'auto') {
+    return resolveAutoMatchKeyColumns(sheet, dbRows);
+  }
+  if (matchKey === 'PID+組別') {
+    return sharedSet.has('PID') && sharedSet.has('組別') ? ['PID', '組別'] : [];
+  }
+  if (matchKey === '組別+姓名') {
+    return sharedSet.has('組別') && sharedSet.has('姓名') ? ['組別', '姓名'] : [];
+  }
+  return sharedSet.has(matchKey) ? [matchKey] : [];
+}
+
 export function getAvailableMatchKeys(
   sheet: ParsedExternalFilterSheet,
   dbRows: DbRowItem[],
@@ -213,8 +278,13 @@ export function getAvailableMatchKeys(
   const autoSuffix = autoCols.length > 0 ? ` (${autoCols.join(' + ')})` : '';
   const options: ExternalMatchKeyOption[] = [
     {
+      key: 'global',
+      label: '跟隨全域規則（預設 + 組別設定）',
+      columns: autoCols,
+    },
+    {
       key: 'auto',
-      label: `自動偵測${autoSuffix}`,
+      label: `單檔自動偵測${autoSuffix}`,
       columns: autoCols,
     },
   ];
@@ -264,22 +334,47 @@ export function matchExternalFilterToDb(
   sheet: ParsedExternalFilterSheet,
   dbRows: DbRowItem[],
   matchKey = 'auto',
+  config?: ExternalFilterMatchConfig,
 ): ExternalFilterMatchResult {
-  let resolvedKeyColumns: string[];
-  if (matchKey === 'auto') {
-    resolvedKeyColumns = resolveAutoMatchKeyColumns(sheet, dbRows);
-  } else if (matchKey === 'PID+組別') {
-    resolvedKeyColumns = ['PID', '組別'];
-  } else if (matchKey === '組別+姓名') {
-    resolvedKeyColumns = ['組別', '姓名'];
-  } else {
-    resolvedKeyColumns = sheet.sharedHeaders.includes(matchKey) ? [matchKey] : [];
+  const useGlobalConfig = matchKey === 'global';
+  const effectiveDefaultKey = useGlobalConfig
+    ? (config?.defaultMatchKey ?? 'auto')
+    : matchKey;
+  const resolvedKeyColumns = resolveMatchKeyColumns(effectiveDefaultKey, sheet, dbRows);
+
+  const groupOverrideColumnsMap = new Map<string, string[]>();
+  if (useGlobalConfig && config?.groupOverrides) {
+    for (const override of config.groupOverrides) {
+      const normalizedGroup = override.groupCode.trim().toUpperCase();
+      if (!normalizedGroup) continue;
+      groupOverrideColumnsMap.set(
+        normalizedGroup,
+        resolveMatchKeyColumns(override.matchKey, sheet, dbRows),
+      );
+    }
   }
+
+  const getColumnsForRow = (values: Record<string, string>): string[] => {
+    if (groupOverrideColumnsMap.size > 0) {
+      const grp = (values['組別'] ?? '').trim().toUpperCase();
+      if (grp && groupOverrideColumnsMap.has(grp)) {
+        return groupOverrideColumnsMap.get(grp) ?? [];
+      }
+    }
+    return resolvedKeyColumns;
+  };
+
+  const getNamespacedKey = (values: Record<string, string>): string | null => {
+    const cols = getColumnsForRow(values);
+    const composite = buildCompositeKey(values, cols);
+    if (!composite) return null;
+    return `${cols.join('+')}::${composite}`;
+  };
 
   const dbRecordsByKey = new Map<string, number[]>();
   for (const row of dbRows) {
     if (row.kind !== 'record') continue;
-    const key = buildCompositeKey(row.values, resolvedKeyColumns);
+    const key = getNamespacedKey(row.values);
     if (!key) continue;
     const list = dbRecordsByKey.get(key) ?? [];
     list.push(row.rowNumber);
@@ -292,7 +387,7 @@ export function matchExternalFilterToDb(
   let unmatchedExternalRowCount = 0;
 
   for (const extRow of sheet.rows) {
-    const key = buildCompositeKey(extRow, resolvedKeyColumns);
+    const key = getNamespacedKey(extRow);
     const matchedRowNums = key ? dbRecordsByKey.get(key) : undefined;
     if (matchedRowNums && matchedRowNums.length > 0) {
       matchedExternalRowCount++;

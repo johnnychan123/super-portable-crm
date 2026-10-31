@@ -177,4 +177,41 @@ describe('externalFilterMatcher', () => {
     expect(parsed.rows.length).toBe(1);
     expect(parsed.rows[0]?.['PID']).toBe('101');
   });
+
+  test('supports defaultMatchKey plus per-group matchKey overrides with strict blank non-fallback', () => {
+    const buf = makeWorkbookBuffer('DB', [
+      ['組別', 'PID', '姓名', '桌號'],
+      ['MA001', 'P001', '陳大文', 'A1'], // MA001 uses default (PID+組別) -> matches row 3
+      ['MA001', '', '李小明', 'A2'], // MA001 missing PID -> strict no-fallback -> should NOT match row 4
+      ['MZ001', '', '張三', 'Z1'], // MZ001 overridden to use 組別+姓名 -> matches row 5 even without PID
+    ]);
+
+    const extendedDbRows: DbRowItem[] = [
+      ...dbRows.slice(0, 3),
+      {
+        rowNumber: 5,
+        kind: 'record',
+        values: {
+          'Pf.ID': '',
+          PID: '',
+          組別: 'MZ001',
+          姓名: '張三',
+          '中文名(沒有稱謂)': '張三',
+        },
+        ancestorSectionRows: [2],
+      },
+    ];
+
+    const parsed = parseExternalFilterWorkbook(buf, 'mixed_groups.xlsx', dbHeaders);
+    const res = matchExternalFilterToDb(parsed, extendedDbRows, 'global', {
+      defaultMatchKey: 'PID+組別',
+      groupOverrides: [{ id: 'g1', groupCode: 'MZ001', matchKey: '組別+姓名' }],
+    });
+
+    expect(Array.from(res.matchedDbRowNumbers)).toEqual([3, 5]);
+    expect(res.matchedExternalRowCount).toBe(2);
+    expect(res.unmatchedExternalRowCount).toBe(1);
+    expect(res.extraValuesByDbRow.get(3)).toEqual({ 桌號: 'A1' });
+    expect(res.extraValuesByDbRow.get(5)).toEqual({ 桌號: 'Z1' });
+  });
 });
