@@ -9,10 +9,17 @@ import {
   formatPlatformLabel,
   getGreetingMessage,
   getNextSortState,
+  recomputeFilesWithGlobalRules,
   reconcileExternalFilterState,
   resolveActiveOutputHeaders,
 } from '../App';
 import { computeVirtualWindow, findJumpTargetIndex } from '../components/VirtualizedDbTable';
+import type { DbRowItem } from '../lib/excelParser';
+import {
+  matchExternalFilterToDb,
+  type ImportedFilterFile,
+  type ParsedExternalFilterSheet,
+} from '../lib/externalFilterMatcher';
 
 describe('Super Portable CRM Hello World', () => {
   test('getGreetingMessage returns expected Hello World greeting', () => {
@@ -180,5 +187,55 @@ describe('Super Portable CRM Hello World', () => {
       exportTemplateFileId: '',
       exportColumnMode: 'db_all',
     });
+  });
+
+  test('recomputeFilesWithGlobalRules updates files using global mode while preserving single-file overrides', () => {
+    const dbRows: DbRowItem[] = [
+      {
+        rowNumber: 3,
+        kind: 'record',
+        values: { 組別: 'MZ001', PID: '', 姓名: '張三' },
+        ancestorSectionRows: [],
+      },
+    ];
+    const sheet: ParsedExternalFilterSheet = {
+      fileName: 'ext.xlsx',
+      sheetName: 'DB',
+      headers: ['組別', 'PID', '姓名'],
+      rows: [{ 組別: 'MZ001', PID: '', 姓名: '張三' }],
+      sharedHeaders: ['組別', 'PID', '姓名'],
+      extraHeaders: [],
+    };
+    const initialFiles: ImportedFilterFile[] = [
+      {
+        id: 'f-global',
+        fileName: 'global.xlsx',
+        sheet,
+        availableMatchKeys: [],
+        selectedMatchKey: 'global',
+        matchResult: matchExternalFilterToDb(sheet, dbRows, 'global', {
+          defaultMatchKey: 'PID+組別',
+          groupOverrides: [],
+        }),
+      },
+      {
+        id: 'f-override',
+        fileName: 'override.xlsx',
+        sheet,
+        availableMatchKeys: [],
+        selectedMatchKey: 'PID+組別',
+        matchResult: matchExternalFilterToDb(sheet, dbRows, 'PID+組別'),
+      },
+    ];
+
+    expect(initialFiles[0]?.matchResult.matchedDbRowNumbers.size).toBe(0);
+
+    const updated = recomputeFilesWithGlobalRules(initialFiles, dbRows, {
+      defaultMatchKey: 'PID+組別',
+      groupOverrides: [{ id: 'g1', groupCode: 'MZ001', matchKey: '組別+姓名' }],
+    });
+
+    expect(Array.from(updated[0]?.matchResult.matchedDbRowNumbers ?? [])).toEqual([3]);
+    expect(updated[1]?.matchResult.matchedDbRowNumbers.size).toBe(0);
   });
 });

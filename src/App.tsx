@@ -39,10 +39,13 @@ import {
   resolveExportDbRows,
 } from './lib/excelExporter';
 import {
+  type ExternalFilterMatchConfig,
   type ExternalFilterViewMode,
+  type GroupMatchOverride,
   type ImportedFilterFile,
   computeExternalFilterRowSet,
   getAvailableMatchKeys,
+  getGlobalMatchKeyOptions,
   matchExternalFilterToDb,
   mergeExtraValuesFromFiles,
   parseExternalFilterWorkbook,
@@ -163,6 +166,22 @@ export function reconcileExternalFilterState(
   };
 }
 
+export function recomputeFilesWithGlobalRules(
+  files: ImportedFilterFile[],
+  dbRows: ParsedCrmWorkbook['dbRows'],
+  config: ExternalFilterMatchConfig,
+): ImportedFilterFile[] {
+  return files.map((file) => {
+    if (file.selectedMatchKey !== 'global') {
+      return file;
+    }
+    return {
+      ...file,
+      matchResult: matchExternalFilterToDb(file.sheet, dbRows, 'global', config),
+    };
+  });
+}
+
 export function resolveActiveOutputHeaders(
   dbHeaders: string[],
   mode: ExportColumnMode,
@@ -228,6 +247,9 @@ export default function App(): React.ReactElement {
   const [showExternalFilterPanel, setShowExternalFilterPanel] = useState(false);
   const [importedFilterFiles, setImportedFilterFiles] = useState<ImportedFilterFile[]>([]);
   const [externalFilterMode, setExternalFilterMode] = useState<ExternalFilterViewMode>('all');
+  const [defaultExternalMatchKey, setDefaultExternalMatchKey] = useState<string>('auto');
+  const [groupMatchOverrides, setGroupMatchOverrides] = useState<GroupMatchOverride[]>([]);
+  const [groupOverrideSearch, setGroupOverrideSearch] = useState<string>('');
 
   // Export column configuration ("按需選擇匯出欄位")
   const [showExportColumnPanel, setShowExportColumnPanel] = useState(false);
@@ -296,6 +318,9 @@ export default function App(): React.ReactElement {
       resetAllDbFilters();
       setSelectedRowNumbers(new Set());
       setImportedFilterFiles([]);
+      setDefaultExternalMatchKey('auto');
+      setGroupMatchOverrides([]);
+      setGroupOverrideSearch('');
       setExportColumnMode('db_all');
       setExportTemplateFileId('');
       setCustomExportDbHeaders(parsed.dbHeaders);
@@ -314,16 +339,25 @@ export default function App(): React.ReactElement {
   ): void => {
     if (!workbook || items.length === 0) return;
     try {
+      const matchConfig: ExternalFilterMatchConfig = {
+        defaultMatchKey: defaultExternalMatchKey,
+        groupOverrides: groupMatchOverrides,
+      };
       const added: ImportedFilterFile[] = items.map((item, idx) => {
         const sheet = parseExternalFilterWorkbook(item.buffer, item.fileName, workbook.dbHeaders);
         const availableMatchKeys = getAvailableMatchKeys(sheet, workbook.dbRows);
-        const matchResult = matchExternalFilterToDb(sheet, workbook.dbRows, 'auto');
+        const matchResult = matchExternalFilterToDb(
+          sheet,
+          workbook.dbRows,
+          'global',
+          matchConfig,
+        );
         return {
           id: `ext-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
           fileName: item.fileName,
           sheet,
           availableMatchKeys,
-          selectedMatchKey: 'auto',
+          selectedMatchKey: 'global',
           matchResult,
         };
       });
@@ -408,14 +442,103 @@ export default function App(): React.ReactElement {
 
   const handleChangeExternalMatchKey = (fileId: string, nextMatchKey: string): void => {
     if (!workbook) return;
+    const matchConfig: ExternalFilterMatchConfig = {
+      defaultMatchKey: defaultExternalMatchKey,
+      groupOverrides: groupMatchOverrides,
+    };
     setImportedFilterFiles((prev) =>
       prev.map((f) => {
         if (f.id !== fileId) return f;
         return {
           ...f,
           selectedMatchKey: nextMatchKey,
-          matchResult: matchExternalFilterToDb(f.sheet, workbook.dbRows, nextMatchKey),
+          matchResult: matchExternalFilterToDb(
+            f.sheet,
+            workbook.dbRows,
+            nextMatchKey,
+            matchConfig,
+          ),
         };
+      }),
+    );
+  };
+
+  const handleChangeDefaultExternalMatchKey = (nextDefaultKey: string): void => {
+    setDefaultExternalMatchKey(nextDefaultKey);
+    if (!workbook) return;
+    const nextConfig: ExternalFilterMatchConfig = {
+      defaultMatchKey: nextDefaultKey,
+      groupOverrides: groupMatchOverrides,
+    };
+    setImportedFilterFiles((prev) =>
+      recomputeFilesWithGlobalRules(prev, workbook.dbRows, nextConfig),
+    );
+  };
+
+  const handleAddGroupMatchOverride = (): void => {
+    if (!workbook) return;
+    // Prefer picking the first group present in imported filter files or workbook.groups not yet overridden
+    const usedGroups = new Set(
+      groupMatchOverrides.map((o) => o.groupCode.trim().toUpperCase()),
+    );
+    const extGroupCodes: string[] = [];
+    for (const file of importedFilterFiles) {
+      for (const row of file.sheet.rows) {
+        const g = (row['組別'] ?? '').trim().toUpperCase();
+        if (g && !extGroupCodes.includes(g)) {
+          extGroupCodes.push(g);
+        }
+      }
+    }
+    const candidateGroup =
+      extGroupCodes.find((g) => !usedGroups.has(g)) ??
+      workbook.groups.find((g) => !usedGroups.has(g.code.toUpperCase()))?.code ??
+      extGroupCodes[0] ??
+      workbook.groups[0]?.code ??
+      '';
+
+    const nextOverrides: GroupMatchOverride[] = [
+      ...groupMatchOverrides,
+      {
+        id: `grp-match-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        groupCode: candidateGroup,
+        matchKey: '組別+姓名',
+      },
+    ];
+    setGroupMatchOverrides(nextOverrides);
+    setImportedFilterFiles((prev) =>
+      recomputeFilesWithGlobalRules(prev, workbook.dbRows, {
+        defaultMatchKey: defaultExternalMatchKey,
+        groupOverrides: nextOverrides,
+      }),
+    );
+  };
+
+  const handleUpdateGroupMatchOverride = (
+    id: string,
+    patch: Partial<Pick<GroupMatchOverride, 'groupCode' | 'matchKey'>>,
+  ): void => {
+    if (!workbook) return;
+    const nextOverrides = groupMatchOverrides.map((item) =>
+      item.id === id ? { ...item, ...patch } : item,
+    );
+    setGroupMatchOverrides(nextOverrides);
+    setImportedFilterFiles((prev) =>
+      recomputeFilesWithGlobalRules(prev, workbook.dbRows, {
+        defaultMatchKey: defaultExternalMatchKey,
+        groupOverrides: nextOverrides,
+      }),
+    );
+  };
+
+  const handleRemoveGroupMatchOverride = (id: string): void => {
+    if (!workbook) return;
+    const nextOverrides = groupMatchOverrides.filter((item) => item.id !== id);
+    setGroupMatchOverrides(nextOverrides);
+    setImportedFilterFiles((prev) =>
+      recomputeFilesWithGlobalRules(prev, workbook.dbRows, {
+        defaultMatchKey: defaultExternalMatchKey,
+        groupOverrides: nextOverrides,
       }),
     );
   };
@@ -1928,6 +2051,143 @@ export default function App(): React.ReactElement {
                                 </>
                               )}
                             </div>
+                          </div>
+
+                          {/* Global Default Match Key & Per-Group Match Overrides */}
+                          <div className="rounded-md border border-indigo-100 bg-white/90 p-3 space-y-2.5 text-xs">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-semibold text-slate-800">
+                                  預設對比依據：
+                                </span>
+                                <select
+                                  value={defaultExternalMatchKey}
+                                  onChange={(e) =>
+                                    handleChangeDefaultExternalMatchKey(e.target.value)
+                                  }
+                                  className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                                >
+                                  {getGlobalMatchKeyOptions(workbook.dbHeaders).map((opt) => (
+                                    <option key={opt.key} value={opt.key}>
+                                      {opt.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <span className="text-slate-400">
+                                  （未單獨指定規則的組別皆以此預設依據比對）
+                                </span>
+                              </div>
+
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={handleAddGroupMatchOverride}
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                新增特定組別對比依據
+                              </Button>
+                            </div>
+
+                            {groupMatchOverrides.length > 0 && (
+                              <div className="space-y-2 pt-1 border-t border-slate-100">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="font-medium text-slate-700">
+                                    各組別專屬對比依據（共 {groupMatchOverrides.length} 個組別規則 · 嚴格依設定欄位比對）：
+                                  </span>
+                                  <Input
+                                    placeholder="搜尋組別代碼或名稱 (如 MZ001)..."
+                                    value={groupOverrideSearch}
+                                    onChange={(e) => setGroupOverrideSearch(e.target.value)}
+                                    className="h-7 w-56 text-xs"
+                                  />
+                                </div>
+
+                                <div className="space-y-1.5">
+                                  {groupMatchOverrides.map((rule) => {
+                                    const searchKw = groupOverrideSearch.trim().toLowerCase();
+                                    const extCounts = new Map<string, number>();
+                                    for (const f of importedFilterFiles) {
+                                      for (const r of f.sheet.rows) {
+                                        const g = (r['組別'] ?? '').trim().toUpperCase();
+                                        if (g) extCounts.set(g, (extCounts.get(g) ?? 0) + 1);
+                                      }
+                                    }
+                                    const groupOptions = workbook.groups.filter((g) => {
+                                      if (g.code.toUpperCase() === rule.groupCode.toUpperCase()) {
+                                        return true;
+                                      }
+                                      if (!searchKw) return true;
+                                      return (
+                                        g.code.toLowerCase().includes(searchKw) ||
+                                        g.nameZh.toLowerCase().includes(searchKw) ||
+                                        g.category.toLowerCase().includes(searchKw)
+                                      );
+                                    });
+
+                                    return (
+                                      <div
+                                        key={rule.id}
+                                        className="flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-slate-50/70 px-2.5 py-1.5"
+                                      >
+                                        <span className="text-slate-600 font-medium">組別：</span>
+                                        <select
+                                          value={rule.groupCode}
+                                          onChange={(e) =>
+                                            handleUpdateGroupMatchOverride(rule.id, {
+                                              groupCode: e.target.value,
+                                            })
+                                          }
+                                          className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800 max-w-xs"
+                                        >
+                                          {groupOptions.map((g) => {
+                                            const extCount =
+                                              extCounts.get(g.code.toUpperCase()) ?? 0;
+                                            return (
+                                              <option key={g.code} value={g.code}>
+                                                {g.code} {g.nameZh}
+                                                {extCount > 0 ? ` (篩選檔內 ${extCount} 筆)` : ''}
+                                              </option>
+                                            );
+                                          })}
+                                        </select>
+
+                                        <span className="text-slate-600 font-medium">
+                                          使用對比依據：
+                                        </span>
+                                        <select
+                                          value={rule.matchKey}
+                                          onChange={(e) =>
+                                            handleUpdateGroupMatchOverride(rule.id, {
+                                              matchKey: e.target.value,
+                                            })
+                                          }
+                                          className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                                        >
+                                          {getGlobalMatchKeyOptions(workbook.dbHeaders).map(
+                                            (opt) => (
+                                              <option key={opt.key} value={opt.key}>
+                                                {opt.label}
+                                              </option>
+                                            ),
+                                          )}
+                                        </select>
+
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => handleRemoveGroupMatchOverride(rule.id)}
+                                          className="h-7 px-2 text-slate-400 hover:text-rose-600 ml-auto"
+                                          title="移除此組別規則"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
                           </div>
 
                           {importedFilterFiles.length > 0 && (
