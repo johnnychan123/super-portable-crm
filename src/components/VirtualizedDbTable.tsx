@@ -27,8 +27,9 @@ export function computeVirtualWindow(
     };
   }
 
-  const safeScrollTop = Math.max(0, scrollTop);
   const safeViewport = Math.max(rowHeight, viewportHeight);
+  const maxScrollTop = Math.max(0, totalRows * rowHeight - safeViewport);
+  const safeScrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
   const visibleCount = Math.ceil(safeViewport / rowHeight);
   const rawStart = Math.floor(safeScrollTop / rowHeight);
 
@@ -47,6 +48,39 @@ export function computeVirtualWindow(
     topSpacerHeight,
     bottomSpacerHeight,
   };
+}
+
+export function findJumpTargetIndex(
+  rows: ReadonlyArray<{
+    rowNumber: number;
+    kind: 'section' | 'record';
+    sectionCode?: string;
+    values: Record<string, string | undefined>;
+  }>,
+  rawTarget: string,
+): number {
+  const cleaned = rawTarget.trim().replace(/^#/, '');
+  if (!cleaned) {
+    return -1;
+  }
+
+  if (/^\d+$/.test(cleaned)) {
+    const targetRowNum = Number(cleaned);
+    const exactIdx = rows.findIndex((r) => r.rowNumber === targetRowNum);
+    if (exactIdx !== -1) {
+      return exactIdx;
+    }
+    return rows.findIndex((r) => r.rowNumber >= targetRowNum);
+  }
+
+  const lower = cleaned.toLowerCase();
+  return rows.findIndex(
+    (r) =>
+      r.sectionCode?.toLowerCase() === lower ||
+      r.values['組別']?.toLowerCase() === lower ||
+      r.sectionCode?.toLowerCase().includes(lower) ||
+      r.values['組別']?.toLowerCase().includes(lower),
+  );
 }
 
 export interface VirtualizedDbTableProps {
@@ -77,6 +111,7 @@ export function VirtualizedDbTable({
 }: VirtualizedDbTableProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const [jumpInput, setJumpInput] = useState('');
 
   const visibleRecordRows = useMemo(
     () => rows.filter((r) => r.kind === 'record'),
@@ -122,12 +157,43 @@ export function VirtualizedDbTable({
     setScrollTop(e.currentTarget.scrollTop);
   };
 
+  const handleQuickJump = (e: React.FormEvent): void => {
+    e.preventDefault();
+    const idx = findJumpTargetIndex(rows, jumpInput);
+    if (idx !== -1 && containerRef.current) {
+      const nextTop = idx * ROW_HEIGHT;
+      containerRef.current.scrollTop = nextTop;
+      setScrollTop(nextTop);
+    }
+  };
+
   return (
-    <div
-      ref={containerRef}
-      onScroll={handleScroll}
-      className="max-h-[600px] overflow-auto border-t border-slate-200 relative"
-    >
+    <div className="border-t border-slate-200">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50/70 px-4 py-1.5 border-b border-slate-200 text-xs text-slate-600">
+        <span>
+          檢視範圍：第 {rows.length === 0 ? 0 : startIndex + 1} - {endIndex} 列（共 {rows.length.toLocaleString()} 列）
+        </span>
+        <form onSubmit={handleQuickJump} className="flex items-center gap-1.5">
+          <input
+            type="text"
+            value={jumpInput}
+            onChange={(e) => setJumpInput(e.target.value)}
+            placeholder="跳轉列號 (#50) 或組別 (MZ001)..."
+            className="h-6 w-48 rounded border border-slate-300 bg-white px-2 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-slate-400"
+          />
+          <button
+            type="submit"
+            className="h-6 rounded border border-slate-300 bg-white px-2 text-xs font-medium text-slate-700 hover:bg-slate-100 cursor-pointer"
+          >
+            跳轉
+          </button>
+        </form>
+      </div>
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="max-h-[600px] overflow-auto relative"
+      >
       <Table>
         <TableHeader className="sticky top-0 z-10 bg-slate-50 shadow-2xs">
           <TableRow>
@@ -349,6 +415,7 @@ export function VirtualizedDbTable({
           )}
         </TableBody>
       </Table>
+      </div>
     </div>
   );
 }

@@ -10,7 +10,7 @@ import {
   getGreetingMessage,
   getNextSortState,
 } from '../App';
-import { computeVirtualWindow } from '../components/VirtualizedDbTable';
+import { computeVirtualWindow, findJumpTargetIndex } from '../components/VirtualizedDbTable';
 
 describe('Super Portable CRM Hello World', () => {
   test('getGreetingMessage returns expected Hello World greeting', () => {
@@ -98,11 +98,23 @@ describe('Super Portable CRM Hello World', () => {
     expect(midWin.topSpacerHeight).toBe(90 * 40);
     expect(midWin.bottomSpacerHeight).toBe((12000 - 125) * 40);
 
-    // Scrolled past bottom boundary safety check
+    // Scrolled past bottom boundary safety check (clamps scrollTop to maxScrollTop so visible slice is non-empty)
     const bottomWin = computeVirtualWindow(999999, 600, 40, 12000, 10);
     expect(bottomWin.endIndex).toBe(12000);
     expect(bottomWin.bottomSpacerHeight).toBe(0);
-    expect(bottomWin.startIndex).toBeLessThanOrEqual(12000);
+    expect(bottomWin.startIndex).toBeLessThan(bottomWin.endIndex);
+    expect(bottomWin.startIndex).toBe(11975);
+
+    const mockRows = [
+      { rowNumber: 2, kind: 'section' as const, sectionCode: 'MA000', values: {} },
+      { rowNumber: 5, kind: 'record' as const, values: { 組別: 'MA001-01' } },
+      { rowNumber: 49, kind: 'section' as const, sectionCode: 'MZ001', values: {} },
+      { rowNumber: 50, kind: 'record' as const, values: { 組別: 'MZ001' } },
+    ];
+    expect(findJumpTargetIndex(mockRows, '#49')).toBe(2);
+    expect(findJumpTargetIndex(mockRows, '50')).toBe(3);
+    expect(findJumpTargetIndex(mockRows, 'mz001')).toBe(2);
+    expect(findJumpTargetIndex(mockRows, 'notfound')).toBe(-1);
   });
 
   test('applyBatchSelection and getNextSortState handle selection operations and 3-state column sort cycling', () => {

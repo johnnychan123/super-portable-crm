@@ -105,8 +105,10 @@ describe('parseCrmWorkbook with test.xlsx', () => {
       attendanceFilter: 'all',
       showSectionHeaders: true,
     });
-    // 1 MZ001 section header + 10 MZ001 data rows
-    expect(mz001Rows.length).toBe(11);
+    // 2 ancestor section headers (MZ000 + MZ001) + 10 MZ001 data rows
+    expect(mz001Rows.length).toBe(12);
+    expect(mz001Rows[0].sectionCode).toBe('MZ000');
+    expect(mz001Rows[1].sectionCode).toBe('MZ001');
   });
 
   test('filters 組別 rows by sector, category, and search query, and selects DB column presets', () => {
@@ -178,6 +180,57 @@ describe('parseCrmWorkbook with test.xlsx', () => {
       showSectionHeaders: true,
     });
     expect(onlySelected.map((r) => r.rowNumber)).toEqual([2, 3, 4, 5, 48, 49, 50]);
+
+    // Blank & special symbol filters must never include section rows (11 section rows have blank fields)
+    const blankAttendance = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'blank',
+      showSectionHeaders: false,
+    });
+    expect(blankAttendance.length).toBe(0);
+
+    const blankReception = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      receptionFilter: 'blank',
+      showSectionHeaders: false,
+    });
+    expect(blankReception.length).toBe(9);
+    expect(blankReception.every((r) => r.kind === 'record' && (r.values['酒會'] ?? '') === '')).toBe(true);
+
+    const receptionSymbol = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      receptionFilter: '%',
+      showSectionHeaders: false,
+    });
+    expect(receptionSymbol.length).toBe(39);
+    expect(receptionSymbol.every((r) => r.kind === 'record' && r.values['酒會'] === '%')).toBe(true);
+
+    const flagRaisingSymbol = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      flagRaisingFilter: '*',
+      showSectionHeaders: false,
+    });
+    expect(flagRaisingSymbol.length).toBe(39);
+    expect(flagRaisingSymbol.every((r) => r.kind === 'record' && r.values['升旗'] === '*')).toBe(true);
+
+    const emptyReceptionRule = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      showSectionHeaders: false,
+      customRules: [{ id: 'e1', column: '酒會', operator: 'is_empty', value: '' }],
+    });
+    expect(emptyReceptionRule.length).toBe(9);
+
+    const nonEmptyReceptionRule = filterDbRows(result.dbRows, {
+      searchQuery: '',
+      attendanceFilter: 'all',
+      showSectionHeaders: false,
+      customRules: [{ id: 'ne1', column: '酒會', operator: 'is_not_empty', value: '' }],
+    });
+    expect(nonEmptyReceptionRule.length).toBe(39);
   });
 
   test('sorts DB record rows by column while hiding section headers during active sort', () => {

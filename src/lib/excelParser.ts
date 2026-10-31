@@ -640,7 +640,7 @@ export function filterDbRows(rows: DbRowItem[], options: DbFilterOptions): DbRow
           [row.sectionCode ?? '', row.sectionTitle ?? '', ...Object.values(row.values)]
             .join(' ')
             .toLowerCase();
-        return matchesSearchQuery(haystack, query);
+        return matchedSectionRowNumbers.has(row.rowNumber) || matchesSearchQuery(haystack, query);
       }
       return matchedSectionRowNumbers.has(row.rowNumber);
     }
