@@ -4,6 +4,7 @@ import { filterDbRows, type DbRowItem } from '../lib/excelParser';
 import {
   computeExternalFilterRowSet,
   getAvailableMatchKeys,
+  getGroupOptionsForOverride,
   matchExternalFilterToDb,
   mergeExtraValuesFromFiles,
   parseExternalFilterWorkbook,
@@ -213,5 +214,35 @@ describe('externalFilterMatcher', () => {
     expect(res.unmatchedExternalRowCount).toBe(1);
     expect(res.extraValuesByDbRow.get(3)).toEqual({ 桌號: 'A1' });
     expect(res.extraValuesByDbRow.get(5)).toEqual({ 桌號: 'Z1' });
+
+    // If a group override specifies a column omitted from the external sheet (e.g., Pf.ID), it safely yields 0 matches for that group
+    const resMissingCol = matchExternalFilterToDb(parsed, extendedDbRows, 'global', {
+      defaultMatchKey: 'PID+組別',
+      groupOverrides: [{ id: 'g1', groupCode: 'MZ001', matchKey: 'Pf.ID' }],
+    });
+    expect(Array.from(resMissingCol.matchedDbRowNumbers)).toEqual([3]);
+
+    // getGroupOptionsForOverride prioritizes groups appearing in external files and includes DB/external sub-groups not in workbook.groups
+    const groupOpts = getGroupOptionsForOverride(
+      [
+        { id: '1', sectorCode: 'MA000', category: 'A', code: 'MA009', nameZh: '未出現部門' },
+        { id: '2', sectorCode: 'MA000', category: 'A', code: 'MA001', nameZh: '行政長官辦公室' },
+      ],
+      extendedDbRows,
+      [
+        {
+          id: 'f1',
+          fileName: 'mixed_groups.xlsx',
+          sheet: parsed,
+          availableMatchKeys: [],
+          selectedMatchKey: 'global',
+          matchResult: res,
+        },
+      ],
+    );
+    expect(groupOpts.map((g) => g.code)).toEqual(['MA001', 'MZ001', 'MA009']);
+    expect(groupOpts[0]?.externalCount).toBe(2);
+    expect(groupOpts[1]?.externalCount).toBe(1);
+    expect(groupOpts[2]?.externalCount).toBe(0);
   });
 });

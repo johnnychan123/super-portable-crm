@@ -46,6 +46,7 @@ import {
   computeExternalFilterRowSet,
   getAvailableMatchKeys,
   getGlobalMatchKeyOptions,
+  getGroupOptionsForOverride,
   matchExternalFilterToDb,
   mergeExtraValuesFromFiles,
   parseExternalFilterWorkbook,
@@ -649,6 +650,14 @@ export default function App(): React.ReactElement {
   const mergedExtraValuesByRowNumber = useMemo(
     () => mergeExtraValuesFromFiles(importedFilterFiles),
     [importedFilterFiles],
+  );
+
+  const allGroupOverrideOptions = useMemo(
+    () =>
+      workbook
+        ? getGroupOptionsForOverride(workbook.groups, workbook.dbRows, importedFilterFiles)
+        : [],
+    [workbook, importedFilterFiles],
   );
 
   const activeOutputHeaders = useMemo(() => {
@@ -2106,14 +2115,7 @@ export default function App(): React.ReactElement {
                                 <div className="space-y-1.5">
                                   {groupMatchOverrides.map((rule) => {
                                     const searchKw = groupOverrideSearch.trim().toLowerCase();
-                                    const extCounts = new Map<string, number>();
-                                    for (const f of importedFilterFiles) {
-                                      for (const r of f.sheet.rows) {
-                                        const g = (r['組別'] ?? '').trim().toUpperCase();
-                                        if (g) extCounts.set(g, (extCounts.get(g) ?? 0) + 1);
-                                      }
-                                    }
-                                    const groupOptions = workbook.groups.filter((g) => {
+                                    const groupOptions = allGroupOverrideOptions.filter((g) => {
                                       if (g.code.toUpperCase() === rule.groupCode.toUpperCase()) {
                                         return true;
                                       }
@@ -2140,16 +2142,14 @@ export default function App(): React.ReactElement {
                                           }
                                           className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800 max-w-xs"
                                         >
-                                          {groupOptions.map((g) => {
-                                            const extCount =
-                                              extCounts.get(g.code.toUpperCase()) ?? 0;
-                                            return (
-                                              <option key={g.code} value={g.code}>
-                                                {g.code} {g.nameZh}
-                                                {extCount > 0 ? ` (篩選檔內 ${extCount} 筆)` : ''}
-                                              </option>
-                                            );
-                                          })}
+                                          {groupOptions.map((g) => (
+                                            <option key={g.code} value={g.code}>
+                                              {g.code} {g.nameZh}
+                                              {g.externalCount > 0
+                                                ? ` (篩選檔內 ${g.externalCount} 筆)`
+                                                : ''}
+                                            </option>
+                                          ))}
                                         </select>
 
                                         <span className="text-slate-600 font-medium">

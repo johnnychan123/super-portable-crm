@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import type { DbRowItem } from './excelParser';
+import type { CrmGroupItem, DbRowItem } from './excelParser';
 
 export interface ParsedExternalFilterSheet {
   fileName: string;
@@ -475,3 +475,69 @@ export function mergeExtraValuesFromFiles(
   }
   return merged;
 }
+
+export interface GroupOptionForOverride {
+  code: string;
+  nameZh: string;
+  category: string;
+  externalCount: number;
+}
+
+export function getGroupOptionsForOverride(
+  groups: CrmGroupItem[],
+  dbRows: DbRowItem[],
+  files: ImportedFilterFile[],
+): GroupOptionForOverride[] {
+  const extCounts = new Map<string, number>();
+  for (const f of files) {
+    for (const r of f.sheet.rows) {
+      const g = (r['組別'] ?? '').trim().toUpperCase();
+      if (g) {
+        extCounts.set(g, (extCounts.get(g) ?? 0) + 1);
+      }
+    }
+  }
+
+  const byCode = new Map<string, GroupOptionForOverride>();
+  for (const g of groups) {
+    const code = g.code.trim().toUpperCase();
+    if (!code) continue;
+    byCode.set(code, {
+      code: g.code,
+      nameZh: g.nameZh,
+      category: g.category,
+      externalCount: extCounts.get(code) ?? 0,
+    });
+  }
+
+  for (const row of dbRows) {
+    if (row.kind !== 'record') continue;
+    const rawCode = (row.values['組別'] ?? '').trim();
+    const normCode = rawCode.toUpperCase();
+    if (!normCode || byCode.has(normCode)) continue;
+    byCode.set(normCode, {
+      code: rawCode,
+      nameZh: row.currentSectionLabel ?? '',
+      category: row.category ?? '',
+      externalCount: extCounts.get(normCode) ?? 0,
+    });
+  }
+
+  for (const [normCode, count] of extCounts.entries()) {
+    if (!byCode.has(normCode)) {
+      byCode.set(normCode, {
+        code: normCode,
+        nameZh: '',
+        category: '',
+        externalCount: count,
+      });
+    }
+  }
+
+  const all = Array.from(byCode.values());
+  const withExt = all.filter((item) => item.externalCount > 0);
+  const withoutExt = all.filter((item) => item.externalCount === 0);
+  withExt.sort((a, b) => b.externalCount - a.externalCount);
+  return [...withExt, ...withoutExt];
+}
+
