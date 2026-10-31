@@ -1,7 +1,7 @@
 {
   "name": "super-portable-crm",
   "productName": "Super Portable CRM",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Cross-platform portable CRM desktop application for Excel data processing and analysis",
   "main": "dist-electron/main.cjs",
   "author": "johnnychan123",
