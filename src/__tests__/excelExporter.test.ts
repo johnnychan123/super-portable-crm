@@ -120,10 +120,10 @@ describe('excelExporter', () => {
     expect(rowsFilled[4]?.[4]).toBe('MA-00-01');
   });
 
-  test('falls back section header label to first column when 姓名 is omitted from outputHeaders', () => {
-    const noNameHeaders = ['組別', '出席活動', '桌號'];
+  test('falls back section header label to first column when 姓名 is omitted from outputHeaders (even when Remark is non-empty)', () => {
+    const noNameHeaders = ['組別', 'PID', '出席活動', 'Remark'];
     const buf = buildExportWorkbookBuffer(workbook, {
-      targetRecordRowNumbers: new Set([5]),
+      targetRecordRowNumbers: new Set([50]),
       outputHeaders: noNameHeaders,
     });
     const wbOut = XLSX.read(buf, { type: 'array' });
@@ -132,6 +132,8 @@ describe('excelExporter', () => {
       defval: '',
     });
     expect(matrix[0]).toEqual(noNameHeaders);
-    expect(matrix[1]?.[0]).toContain('MA000');
+    expect(String(matrix[1]?.[0] ?? '')).toContain('MZ000');
+    // Row 49 (MZ001 基本法委員會) has a non-empty Remark in test.xlsx; column 0 must still get the fallback section label
+    expect(String(matrix[2]?.[0] ?? '')).toContain('MZ001');
   });
 });

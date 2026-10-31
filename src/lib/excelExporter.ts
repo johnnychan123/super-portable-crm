@@ -78,7 +78,7 @@ export function buildExportWorkbookBuffer(
             e: { c: nameColIdx + 1, r: outRowIndex },
           });
         }
-      } else if (rowCells.length > 0 && !rowCells.some((c) => c !== '')) {
+      } else if (rowCells.length > 0 && rowCells[0] === '') {
         rowCells[0] =
           row.values['姓名'] || row.currentSectionLabel || row.sectionCode || '';
       }

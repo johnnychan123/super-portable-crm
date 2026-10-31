@@ -115,12 +115,26 @@ export function parseExternalFilterWorkbook(
           nameVal || Object.values(values).find((v) => v !== '') || '';
         const nonEmptyCount = Object.values(values).filter((v) => v !== '').length;
 
+        const firstColHeader = headers[0] ?? '';
+        const firstColVal = firstColHeader ? (values[firstColHeader] ?? '') : '';
+        const firstColMatch = firstColVal.match(SECTION_CODE_REGEX);
+        const nonRemarkNonFirstEmpty = Object.entries(values).every(
+          ([k, v]) => k === firstColHeader || k === 'Remark' || v === '',
+        );
+        const isFallbackSectionRow =
+          !headers.includes('姓名') &&
+          firstColMatch !== null &&
+          ((firstColMatch[2] ?? '').trim() !== '' ||
+            /^M[A-Z]000$/.test(firstColMatch[1] ?? '')) &&
+          nonRemarkNonFirstEmpty;
+
         const isSectionRow =
-          groupVal === '' &&
-          calcVal === '' &&
-          attendVal === '' &&
-          SECTION_CODE_REGEX.test(firstNonEmptyVal) &&
-          (nameVal !== '' || nonEmptyCount <= 2);
+          (groupVal === '' &&
+            calcVal === '' &&
+            attendVal === '' &&
+            SECTION_CODE_REGEX.test(firstNonEmptyVal) &&
+            (nameVal !== '' || nonEmptyCount <= 2)) ||
+          isFallbackSectionRow;
 
         if (isSectionRow) {
           continue;

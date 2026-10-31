@@ -164,4 +164,17 @@ describe('externalFilterMatcher', () => {
     });
     expect(filteredWithSections.map((r) => r.rowNumber)).toEqual([2, 4]);
   });
+
+  test('skips fallback section rows when re-importing a custom export that omitted 姓名', () => {
+    const buf = makeWorkbookBuffer('DB', [
+      ['組別', 'PID', '出席活動', 'Remark'],
+      ['MA000 公共行政部門', '', '', ''],
+      ['MZ001 基本法委員會', '', '', '2024年12月31日更新'],
+      ['MA001', '101', '1', ''],
+    ]);
+
+    const parsed = parseExternalFilterWorkbook(buf, 'custom_no_name.xlsx', dbHeaders);
+    expect(parsed.rows.length).toBe(1);
+    expect(parsed.rows[0]?.['PID']).toBe('101');
+  });
 });

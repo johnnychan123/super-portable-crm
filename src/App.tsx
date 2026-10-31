@@ -118,6 +118,51 @@ export function getNextSortState(
 
 export type ExportColumnMode = 'db_all' | 'from_file' | 'custom';
 
+export function reconcileExternalFilterState(
+  fileIds: string[],
+  current: {
+    externalFilterMode: ExternalFilterViewMode;
+    exportTemplateFileId: string;
+    exportColumnMode: ExportColumnMode;
+  },
+): {
+  externalFilterMode: ExternalFilterViewMode;
+  exportTemplateFileId: string;
+  exportColumnMode: ExportColumnMode;
+} {
+  if (fileIds.length === 0) {
+    return {
+      externalFilterMode: 'all',
+      exportTemplateFileId: '',
+      exportColumnMode:
+        current.exportColumnMode === 'from_file' ? 'db_all' : current.exportColumnMode,
+    };
+  }
+
+  const fileIdSet = new Set(fileIds);
+  let nextFilterMode = current.externalFilterMode;
+  if (nextFilterMode === 'intersection' && fileIds.length < 2) {
+    nextFilterMode = 'all';
+  } else if (
+    nextFilterMode !== 'all' &&
+    nextFilterMode !== 'union' &&
+    nextFilterMode !== 'intersection' &&
+    !fileIdSet.has(nextFilterMode)
+  ) {
+    nextFilterMode = 'all';
+  }
+
+  const nextTemplateId = fileIdSet.has(current.exportTemplateFileId)
+    ? current.exportTemplateFileId
+    : (fileIds[0] ?? '');
+
+  return {
+    externalFilterMode: nextFilterMode,
+    exportTemplateFileId: nextTemplateId,
+    exportColumnMode: current.exportColumnMode,
+  };
+}
+
 export function resolveActiveOutputHeaders(
   dbHeaders: string[],
   mode: ExportColumnMode,
@@ -283,13 +328,19 @@ export default function App(): React.ReactElement {
         };
       });
 
-      setImportedFilterFiles((prev) => {
-        const next = [...prev, ...added];
-        if (!exportTemplateFileId && added[0]) {
-          setExportTemplateFileId(added[0].id);
-        }
-        return next;
-      });
+      const nextFiles = [...importedFilterFiles, ...added];
+      const reconciled = reconcileExternalFilterState(
+        nextFiles.map((f) => f.id),
+        {
+          externalFilterMode,
+          exportTemplateFileId,
+          exportColumnMode,
+        },
+      );
+      setImportedFilterFiles(nextFiles);
+      setExternalFilterMode(reconciled.externalFilterMode);
+      setExportTemplateFileId(reconciled.exportTemplateFileId);
+      setExportColumnMode(reconciled.exportColumnMode);
       setShowExternalFilterPanel(true);
       setErrorMessage(null);
     } catch (err) {
@@ -370,22 +421,19 @@ export default function App(): React.ReactElement {
   };
 
   const handleRemoveExternalFilterFile = (fileId: string): void => {
-    setImportedFilterFiles((prev) => {
-      const next = prev.filter((f) => f.id !== fileId);
-      if (externalFilterMode === fileId) {
-        setExternalFilterMode('all');
-      }
-      if (exportTemplateFileId === fileId) {
-        setExportTemplateFileId(next[0]?.id ?? '');
-        if (exportColumnMode === 'from_file' && next.length === 0) {
-          setExportColumnMode('db_all');
-        }
-      }
-      if (next.length === 0) {
-        setExternalFilterMode('all');
-      }
-      return next;
-    });
+    const nextFiles = importedFilterFiles.filter((f) => f.id !== fileId);
+    const reconciled = reconcileExternalFilterState(
+      nextFiles.map((f) => f.id),
+      {
+        externalFilterMode,
+        exportTemplateFileId,
+        exportColumnMode,
+      },
+    );
+    setImportedFilterFiles(nextFiles);
+    setExternalFilterMode(reconciled.externalFilterMode);
+    setExportTemplateFileId(reconciled.exportTemplateFileId);
+    setExportColumnMode(reconciled.exportColumnMode);
   };
 
   const handleApplyFileColumnsToExport = (file: ImportedFilterFile): void => {
@@ -482,7 +530,9 @@ export default function App(): React.ReactElement {
 
   const activeOutputHeaders = useMemo(() => {
     if (!workbook) return [];
-    const templateFile = importedFilterFiles.find((f) => f.id === exportTemplateFileId);
+    const templateFile =
+      importedFilterFiles.find((f) => f.id === exportTemplateFileId) ??
+      importedFilterFiles[0];
     return resolveActiveOutputHeaders(
       workbook.dbHeaders,
       exportColumnMode,
@@ -1861,11 +1911,15 @@ export default function App(): React.ReactElement {
                                     variant="ghost"
                                     size="sm"
                                     onClick={() => {
+                                      const reconciled = reconcileExternalFilterState([], {
+                                        externalFilterMode,
+                                        exportTemplateFileId,
+                                        exportColumnMode,
+                                      });
                                       setImportedFilterFiles([]);
-                                      setExternalFilterMode('all');
-                                      if (exportColumnMode === 'from_file') {
-                                        setExportColumnMode('db_all');
-                                      }
+                                      setExternalFilterMode(reconciled.externalFilterMode);
+                                      setExportTemplateFileId(reconciled.exportTemplateFileId);
+                                      setExportColumnMode(reconciled.exportColumnMode);
                                     }}
                                     className="text-slate-500 hover:text-rose-600"
                                   >

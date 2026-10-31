@@ -9,6 +9,7 @@ import {
   formatPlatformLabel,
   getGreetingMessage,
   getNextSortState,
+  reconcileExternalFilterState,
   resolveActiveOutputHeaders,
 } from '../App';
 import { computeVirtualWindow, findJumpTargetIndex } from '../components/VirtualizedDbTable';
@@ -151,5 +152,33 @@ describe('Super Portable CRM Hello World', () => {
         ['桌號', '車牌', '姓名'], // duplicate '姓名' should be deduplicated
       ),
     ).toEqual(['組別', '姓名', '桌號', '車牌']);
+  });
+
+  test('reconcileExternalFilterState cleans up stale exportTemplateFileId and intersection mode on file removal or clear', () => {
+    // When 1 file remains after being in intersection mode with a removed template file ID:
+    expect(
+      reconcileExternalFilterState(['f2'], {
+        externalFilterMode: 'intersection',
+        exportTemplateFileId: 'f1',
+        exportColumnMode: 'from_file',
+      }),
+    ).toEqual({
+      externalFilterMode: 'all',
+      exportTemplateFileId: 'f2',
+      exportColumnMode: 'from_file',
+    });
+
+    // When all files are cleared:
+    expect(
+      reconcileExternalFilterState([], {
+        externalFilterMode: 'union',
+        exportTemplateFileId: 'f2',
+        exportColumnMode: 'from_file',
+      }),
+    ).toEqual({
+      externalFilterMode: 'all',
+      exportTemplateFileId: '',
+      exportColumnMode: 'db_all',
+    });
   });
 });
