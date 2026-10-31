@@ -12,6 +12,7 @@ import {
   recomputeFilesWithGlobalRules,
   reconcileExternalFilterState,
   resolveActiveOutputHeaders,
+  toggleGroupCodeInList,
 } from '../App';
 import { computeVirtualWindow, findJumpTargetIndex } from '../components/VirtualizedDbTable';
 import type { DbRowItem } from '../lib/excelParser';
@@ -237,5 +238,9 @@ describe('Super Portable CRM Hello World', () => {
 
     expect(Array.from(updated[0]?.matchResult.matchedDbRowNumbers ?? [])).toEqual([3]);
     expect(updated[1]?.matchResult.matchedDbRowNumbers.size).toBe(0);
+
+    // Multi-group groupCodes and toggleGroupCodeInList
+    expect(toggleGroupCodeInList(['MZ001'], 'MZ002')).toEqual(['MZ001', 'MZ002']);
+    expect(toggleGroupCodeInList(['MZ001', 'MZ002'], 'mz001')).toEqual(['MZ002']);
   });
 });

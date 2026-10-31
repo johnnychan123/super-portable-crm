@@ -43,7 +43,9 @@ import {
   type ExternalFilterViewMode,
   type GroupMatchOverride,
   type ImportedFilterFile,
+  applyPrefixGroupSelection,
   computeExternalFilterRowSet,
+  filterGroupsByPrefix,
   getAvailableMatchKeys,
   getGlobalMatchKeyOptions,
   getGroupOptionsForOverride,
@@ -167,6 +169,19 @@ export function reconcileExternalFilterState(
   };
 }
 
+export function toggleGroupCodeInList(
+  currentCodes: ReadonlyArray<string>,
+  targetCode: string,
+): string[] {
+  const targetUpper = targetCode.trim().toUpperCase();
+  if (!targetUpper) return [...currentCodes];
+  const exists = currentCodes.some((c) => c.trim().toUpperCase() === targetUpper);
+  if (exists) {
+    return currentCodes.filter((c) => c.trim().toUpperCase() !== targetUpper);
+  }
+  return [...currentCodes, targetCode.trim()];
+}
+
 export function recomputeFilesWithGlobalRules(
   files: ImportedFilterFile[],
   dbRows: ParsedCrmWorkbook['dbRows'],
@@ -250,7 +265,7 @@ export default function App(): React.ReactElement {
   const [externalFilterMode, setExternalFilterMode] = useState<ExternalFilterViewMode>('all');
   const [defaultExternalMatchKey, setDefaultExternalMatchKey] = useState<string>('auto');
   const [groupMatchOverrides, setGroupMatchOverrides] = useState<GroupMatchOverride[]>([]);
-  const [groupOverrideSearch, setGroupOverrideSearch] = useState<string>('');
+  const [rulePrefixInputs, setRulePrefixInputs] = useState<Record<string, string>>({});
 
   // Export column configuration ("按需選擇匯出欄位")
   const [showExportColumnPanel, setShowExportColumnPanel] = useState(false);
@@ -321,7 +336,7 @@ export default function App(): React.ReactElement {
       setImportedFilterFiles([]);
       setDefaultExternalMatchKey('auto');
       setGroupMatchOverrides([]);
-      setGroupOverrideSearch('');
+      setRulePrefixInputs({});
       setExportColumnMode('db_all');
       setExportTemplateFileId('');
       setCustomExportDbHeaders(parsed.dbHeaders);
@@ -478,31 +493,11 @@ export default function App(): React.ReactElement {
 
   const handleAddGroupMatchOverride = (): void => {
     if (!workbook) return;
-    // Prefer picking the first group present in imported filter files or workbook.groups not yet overridden
-    const usedGroups = new Set(
-      groupMatchOverrides.map((o) => o.groupCode.trim().toUpperCase()),
-    );
-    const extGroupCodes: string[] = [];
-    for (const file of importedFilterFiles) {
-      for (const row of file.sheet.rows) {
-        const g = (row['組別'] ?? '').trim().toUpperCase();
-        if (g && !extGroupCodes.includes(g)) {
-          extGroupCodes.push(g);
-        }
-      }
-    }
-    const candidateGroup =
-      extGroupCodes.find((g) => !usedGroups.has(g)) ??
-      workbook.groups.find((g) => !usedGroups.has(g.code.toUpperCase()))?.code ??
-      extGroupCodes[0] ??
-      workbook.groups[0]?.code ??
-      '';
-
     const nextOverrides: GroupMatchOverride[] = [
       ...groupMatchOverrides,
       {
         id: `grp-match-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        groupCode: candidateGroup,
+        groupCodes: [],
         matchKey: '組別+姓名',
       },
     ];
@@ -517,7 +512,7 @@ export default function App(): React.ReactElement {
 
   const handleUpdateGroupMatchOverride = (
     id: string,
-    patch: Partial<Pick<GroupMatchOverride, 'groupCode' | 'matchKey'>>,
+    patch: Partial<Pick<GroupMatchOverride, 'groupCodes' | 'groupCode' | 'matchKey'>>,
   ): void => {
     if (!workbook) return;
     const nextOverrides = groupMatchOverrides.map((item) =>
@@ -532,10 +527,52 @@ export default function App(): React.ReactElement {
     );
   };
 
+  const handleToggleGroupInOverride = (ruleId: string, groupCode: string): void => {
+    const rule = groupMatchOverrides.find((r) => r.id === ruleId);
+    if (!rule) return;
+    const currentCodes = [
+      ...(rule.groupCodes ?? []),
+      ...(rule.groupCode ? [rule.groupCode] : []),
+    ];
+    const nextCodes = toggleGroupCodeInList(currentCodes, groupCode);
+    handleUpdateGroupMatchOverride(ruleId, {
+      groupCodes: nextCodes,
+      groupCode: undefined,
+    });
+  };
+
+  const handlePrefixBatchSelectInOverride = (
+    ruleId: string,
+    prefix: string,
+    mode: 'select' | 'deselect',
+  ): void => {
+    const rule = groupMatchOverrides.find((r) => r.id === ruleId);
+    if (!rule) return;
+    const currentCodes = [
+      ...(rule.groupCodes ?? []),
+      ...(rule.groupCode ? [rule.groupCode] : []),
+    ];
+    const nextCodes = applyPrefixGroupSelection(
+      currentCodes,
+      allGroupOverrideOptions,
+      prefix,
+      mode,
+    );
+    handleUpdateGroupMatchOverride(ruleId, {
+      groupCodes: nextCodes,
+      groupCode: undefined,
+    });
+  };
+
   const handleRemoveGroupMatchOverride = (id: string): void => {
     if (!workbook) return;
     const nextOverrides = groupMatchOverrides.filter((item) => item.id !== id);
     setGroupMatchOverrides(nextOverrides);
+    setRulePrefixInputs((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setImportedFilterFiles((prev) =>
       recomputeFilesWithGlobalRules(prev, workbook.dbRows, {
         defaultMatchKey: defaultExternalMatchKey,
@@ -2099,89 +2136,261 @@ export default function App(): React.ReactElement {
                             </div>
 
                             {groupMatchOverrides.length > 0 && (
-                              <div className="space-y-2 pt-1 border-t border-slate-100">
+                              <div className="space-y-2.5 pt-1 border-t border-slate-100">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <span className="font-medium text-slate-700">
-                                    各組別專屬對比依據（共 {groupMatchOverrides.length} 個組別規則 · 嚴格依設定欄位比對）：
+                                    各組別專屬對比依據（共 {groupMatchOverrides.length} 條規則 · 支援多選組別與輸入 Prefix 快速批次選取）：
                                   </span>
-                                  <Input
-                                    placeholder="搜尋組別代碼或名稱 (如 MZ001)..."
-                                    value={groupOverrideSearch}
-                                    onChange={(e) => setGroupOverrideSearch(e.target.value)}
-                                    className="h-7 w-56 text-xs"
-                                  />
                                 </div>
 
-                                <div className="space-y-1.5">
-                                  {groupMatchOverrides.map((rule) => {
-                                    const searchKw = groupOverrideSearch.trim().toLowerCase();
-                                    const groupOptions = allGroupOverrideOptions.filter((g) => {
-                                      if (g.code.toUpperCase() === rule.groupCode.toUpperCase()) {
-                                        return true;
-                                      }
-                                      if (!searchKw) return true;
-                                      return (
-                                        g.code.toLowerCase().includes(searchKw) ||
-                                        g.nameZh.toLowerCase().includes(searchKw) ||
-                                        g.category.toLowerCase().includes(searchKw)
-                                      );
-                                    });
+                                <div className="space-y-2.5">
+                                  {groupMatchOverrides.map((rule, ruleIdx) => {
+                                    const selectedCodes = [
+                                      ...(rule.groupCodes ?? []),
+                                      ...(rule.groupCode ? [rule.groupCode] : []),
+                                    ];
+                                    const selectedUpperSet = new Set(
+                                      selectedCodes.map((c) => c.trim().toUpperCase()),
+                                    );
+                                    const prefixVal = rulePrefixInputs[rule.id] ?? '';
+                                    const filteredGroupOptions = filterGroupsByPrefix(
+                                      allGroupOverrideOptions,
+                                      prefixVal,
+                                    );
+                                    const groupMetaByUpper = new Map(
+                                      allGroupOverrideOptions.map((g) => [
+                                        g.code.toUpperCase(),
+                                        g,
+                                      ]),
+                                    );
 
                                     return (
                                       <div
                                         key={rule.id}
-                                        className="flex flex-wrap items-center gap-2 rounded border border-slate-200 bg-slate-50/70 px-2.5 py-1.5"
+                                        className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2"
                                       >
-                                        <span className="text-slate-600 font-medium">組別：</span>
-                                        <select
-                                          value={rule.groupCode}
-                                          onChange={(e) =>
-                                            handleUpdateGroupMatchOverride(rule.id, {
-                                              groupCode: e.target.value,
-                                            })
-                                          }
-                                          className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800 max-w-xs"
-                                        >
-                                          {groupOptions.map((g) => (
-                                            <option key={g.code} value={g.code}>
-                                              {g.code} {g.nameZh}
-                                              {g.externalCount > 0
-                                                ? ` (篩選檔內 ${g.externalCount} 筆)`
-                                                : ''}
-                                            </option>
-                                          ))}
-                                        </select>
+                                        {/* Row 1: Rule Match Key & Actions */}
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <Badge variant="outline" className="bg-white">
+                                              規則 #{ruleIdx + 1}
+                                            </Badge>
+                                            <span className="text-slate-700 font-medium">
+                                              使用對比依據：
+                                            </span>
+                                            <select
+                                              value={rule.matchKey}
+                                              onChange={(e) =>
+                                                handleUpdateGroupMatchOverride(rule.id, {
+                                                  matchKey: e.target.value,
+                                                })
+                                              }
+                                              className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                                            >
+                                              {getGlobalMatchKeyOptions(workbook.dbHeaders).map(
+                                                (opt) => (
+                                                  <option key={opt.key} value={opt.key}>
+                                                    {opt.label}
+                                                  </option>
+                                                ),
+                                              )}
+                                            </select>
+                                            <Badge variant="secondary" className="text-[11px]">
+                                              已選 {selectedCodes.length} 個組別
+                                            </Badge>
+                                          </div>
 
-                                        <span className="text-slate-600 font-medium">
-                                          使用對比依據：
-                                        </span>
-                                        <select
-                                          value={rule.matchKey}
-                                          onChange={(e) =>
-                                            handleUpdateGroupMatchOverride(rule.id, {
-                                              matchKey: e.target.value,
-                                            })
-                                          }
-                                          className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
-                                        >
-                                          {getGlobalMatchKeyOptions(workbook.dbHeaders).map(
-                                            (opt) => (
-                                              <option key={opt.key} value={opt.key}>
-                                                {opt.label}
-                                              </option>
-                                            ),
+                                          <div className="flex items-center gap-1.5">
+                                            {selectedCodes.length > 0 && (
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={() =>
+                                                  handleUpdateGroupMatchOverride(rule.id, {
+                                                    groupCodes: [],
+                                                    groupCode: undefined,
+                                                  })
+                                                }
+                                                className="h-7 text-xs text-slate-500 hover:text-rose-600"
+                                              >
+                                                清空已選組別
+                                              </Button>
+                                            )}
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              onClick={() =>
+                                                handleRemoveGroupMatchOverride(rule.id)
+                                              }
+                                              className="h-7 px-2 text-slate-400 hover:text-rose-600"
+                                              title="移除此組別規則"
+                                            >
+                                              <Trash2 className="h-3.5 w-3.5" />
+                                            </Button>
+                                          </div>
+                                        </div>
+
+                                        {/* Row 2: Prefix Quick Filter & Batch Select Bar */}
+                                        <div className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2.5 py-1.5">
+                                          <span className="text-slate-600 font-medium">
+                                            Prefix 快速選取組別：
+                                          </span>
+                                          <Input
+                                            placeholder="輸入組別前綴或名稱 (如 MZ、MA01，按 Enter 直接全選)..."
+                                            value={prefixVal}
+                                            onChange={(e) =>
+                                              setRulePrefixInputs((prev) => ({
+                                                ...prev,
+                                                [rule.id]: e.target.value,
+                                              }))
+                                            }
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter' && prefixVal.trim()) {
+                                                e.preventDefault();
+                                                handlePrefixBatchSelectInOverride(
+                                                  rule.id,
+                                                  prefixVal,
+                                                  'select',
+                                                );
+                                              }
+                                            }}
+                                            className="h-7 w-64 text-xs"
+                                          />
+                                          <Button
+                                            variant="default"
+                                            size="sm"
+                                            className="h-7 text-xs"
+                                            disabled={filteredGroupOptions.length === 0}
+                                            onClick={() =>
+                                              handlePrefixBatchSelectInOverride(
+                                                rule.id,
+                                                prefixVal,
+                                                'select',
+                                              )
+                                            }
+                                          >
+                                            <CheckSquare className="h-3.5 w-3.5" />
+                                            {prefixVal.trim()
+                                              ? `全選前綴「${prefixVal.trim().toUpperCase()}」(${filteredGroupOptions.length})`
+                                              : `全選全部組別 (${filteredGroupOptions.length})`}
+                                          </Button>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-7 text-xs"
+                                            disabled={filteredGroupOptions.length === 0}
+                                            onClick={() =>
+                                              handlePrefixBatchSelectInOverride(
+                                                rule.id,
+                                                prefixVal,
+                                                'deselect',
+                                              )
+                                            }
+                                          >
+                                            {prefixVal.trim()
+                                              ? `取消前綴「${prefixVal.trim().toUpperCase()}」`
+                                              : '取消全部'}
+                                          </Button>
+                                          {prefixVal.trim() && (
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              className="h-7 text-xs text-slate-500"
+                                              onClick={() =>
+                                                setRulePrefixInputs((prev) => ({
+                                                  ...prev,
+                                                  [rule.id]: '',
+                                                }))
+                                              }
+                                            >
+                                              清除前綴過濾
+                                            </Button>
                                           )}
-                                        </select>
+                                        </div>
 
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => handleRemoveGroupMatchOverride(rule.id)}
-                                          className="h-7 px-2 text-slate-400 hover:text-rose-600 ml-auto"
-                                          title="移除此組別規則"
-                                        >
-                                          <Trash2 className="h-3.5 w-3.5" />
-                                        </Button>
+                                        {/* Row 3: Selected Group Chips */}
+                                        {selectedCodes.length > 0 && (
+                                          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                            <span className="text-[11px] text-slate-500">
+                                              已套用組別：
+                                            </span>
+                                            {selectedCodes.map((code) => {
+                                              const meta = groupMetaByUpper.get(
+                                                code.trim().toUpperCase(),
+                                              );
+                                              return (
+                                                <Badge
+                                                  key={code}
+                                                  variant="secondary"
+                                                  className="gap-1 bg-indigo-100/80 text-indigo-950 text-[11px]"
+                                                >
+                                                  <span>
+                                                    {code}
+                                                    {meta?.nameZh ? ` ${meta.nameZh}` : ''}
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      handleToggleGroupInOverride(rule.id, code)
+                                                    }
+                                                    className="ml-0.5 text-slate-500 hover:text-rose-600"
+                                                    title={`移除 ${code}`}
+                                                  >
+                                                    ×
+                                                  </button>
+                                                </Badge>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+
+                                        {/* Row 4: Multi-Select Checkbox Grid */}
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1 max-h-36 overflow-y-auto rounded border border-slate-200 bg-white p-1.5">
+                                          {filteredGroupOptions.length === 0 ? (
+                                            <span className="col-span-full text-slate-400 py-2 text-center">
+                                              找不到符合前綴「{prefixVal}」的組別
+                                            </span>
+                                          ) : (
+                                            filteredGroupOptions.map((g) => {
+                                              const checked = selectedUpperSet.has(
+                                                g.code.toUpperCase(),
+                                              );
+                                              return (
+                                                <label
+                                                  key={g.code}
+                                                  className={`flex items-center gap-1.5 rounded px-2 py-1 cursor-pointer truncate ${
+                                                    checked
+                                                      ? 'bg-indigo-50 text-indigo-950 font-medium'
+                                                      : 'text-slate-600 hover:bg-slate-50'
+                                                  }`}
+                                                  title={`${g.code} ${g.nameZh}${
+                                                    g.externalCount > 0
+                                                      ? ` (篩選檔內 ${g.externalCount} 筆)`
+                                                      : ''
+                                                  }`}
+                                                >
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={checked}
+                                                    onChange={() =>
+                                                      handleToggleGroupInOverride(
+                                                        rule.id,
+                                                        g.code,
+                                                      )
+                                                    }
+                                                    className="h-3.5 w-3.5 rounded border-slate-300 shrink-0"
+                                                  />
+                                                  <span className="truncate">
+                                                    {g.code} {g.nameZh}
+                                                    {g.externalCount > 0
+                                                      ? ` (${g.externalCount})`
+                                                      : ''}
+                                                  </span>
+                                                </label>
+                                              );
+                                            })
+                                          )}
+                                        </div>
                                       </div>
                                     );
                                   })}
