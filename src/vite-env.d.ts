@@ -17,6 +17,17 @@ export interface ExcelOpenFileResult {
   buffer?: Uint8Array;
 }
 
+export interface ExcelOpenedFileItem {
+  fileName: string;
+  filePath?: string;
+  buffer: Uint8Array;
+}
+
+export interface ExcelOpenMultipleFilesResult {
+  canceled: boolean;
+  files?: ExcelOpenedFileItem[];
+}
+
 export interface ExcelSaveFilePayload {
   defaultFileName: string;
   buffer: Uint8Array;
@@ -37,6 +48,7 @@ export interface ElectronAPI {
   };
   getAppInfo: () => Promise<AppRuntimeInfo>;
   openExcelFile?: () => Promise<ExcelOpenFileResult>;
+  openMultipleExcelFiles?: () => Promise<ExcelOpenMultipleFilesResult>;
   saveExcelFile?: (payload: ExcelSaveFilePayload) => Promise<ExcelSaveFileResult>;
 }
 

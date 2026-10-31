@@ -38,6 +38,15 @@ import {
   buildExportWorkbookBuffer,
   resolveExportDbRows,
 } from './lib/excelExporter';
+import {
+  type ExternalFilterViewMode,
+  type ImportedFilterFile,
+  computeExternalFilterRowSet,
+  getAvailableMatchKeys,
+  matchExternalFilterToDb,
+  mergeExtraValuesFromFiles,
+  parseExternalFilterWorkbook,
+} from './lib/externalFilterMatcher';
 import { VirtualizedDbTable } from './components/VirtualizedDbTable';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
@@ -107,6 +116,33 @@ export function getNextSortState(
   return { column: null, direction: 'asc' };
 }
 
+export type ExportColumnMode = 'db_all' | 'from_file' | 'custom';
+
+export function resolveActiveOutputHeaders(
+  dbHeaders: string[],
+  mode: ExportColumnMode,
+  templateFileHeaders: string[],
+  customSelectedDbHeaders: string[],
+  customExtraHeaders: string[],
+): string[] {
+  if (mode === 'from_file' && templateFileHeaders.length > 0) {
+    return templateFileHeaders;
+  }
+  if (mode === 'custom') {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const h of [...customSelectedDbHeaders, ...customExtraHeaders]) {
+      const trimmed = h.trim();
+      if (trimmed && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        result.push(trimmed);
+      }
+    }
+    return result.length > 0 ? result : dbHeaders;
+  }
+  return dbHeaders;
+}
+
 const OPERATOR_LABELS: Record<CustomFilterOperator, string> = {
   contains: '包含',
   not_contains: '不包含',
@@ -143,6 +179,20 @@ export default function App(): React.ReactElement {
   const [customRules, setCustomRules] = useState<CustomFilterRule[]>([]);
   const [customRulesMode, setCustomRulesMode] = useState<'AND' | 'OR'>('AND');
 
+  // External filter Excel files (multi-import & match)
+  const [showExternalFilterPanel, setShowExternalFilterPanel] = useState(false);
+  const [importedFilterFiles, setImportedFilterFiles] = useState<ImportedFilterFile[]>([]);
+  const [externalFilterMode, setExternalFilterMode] = useState<ExternalFilterViewMode>('all');
+
+  // Export column configuration ("按需選擇匯出欄位")
+  const [showExportColumnPanel, setShowExportColumnPanel] = useState(false);
+  const [exportColumnMode, setExportColumnMode] = useState<ExportColumnMode>('db_all');
+  const [exportTemplateFileId, setExportTemplateFileId] = useState<string>('');
+  const [customExportDbHeaders, setCustomExportDbHeaders] = useState<string[]>([]);
+  const [customExtraHeaders, setCustomExtraHeaders] = useState<string[]>([]);
+  const [newExtraHeaderInput, setNewExtraHeaderInput] = useState('');
+  const [populateExtraColumnValues, setPopulateExtraColumnValues] = useState(false);
+
   // Left navigation sidebar state
   const [showSidebar, setShowSidebar] = useState(true);
   const [sidebarTab, setSidebarTab] = useState<'sectors' | 'categories' | 'groups'>('sectors');
@@ -157,6 +207,7 @@ export default function App(): React.ReactElement {
   const [categoryFilter, setCategoryFilter] = useState('all');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const externalFilterInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (window.electronAPI?.getAppInfo) {
@@ -182,6 +233,7 @@ export default function App(): React.ReactElement {
     setDbCategoryFilter('all');
     setDbGroupFilter('all');
     setSelectionFilter('all');
+    setExternalFilterMode('all');
     setCustomRules([]);
     setSort({ column: null, direction: 'asc' });
   };
@@ -198,12 +250,175 @@ export default function App(): React.ReactElement {
       setExportNotice(null);
       resetAllDbFilters();
       setSelectedRowNumbers(new Set());
+      setImportedFilterFiles([]);
+      setExportColumnMode('db_all');
+      setExportTemplateFileId('');
+      setCustomExportDbHeaders(parsed.dbHeaders);
+      setCustomExtraHeaders([]);
+      setPopulateExtraColumnValues(false);
       setGroupSearch('');
       setSectorFilter('all');
       setCategoryFilter('all');
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : '無法解析此 Excel 檔案');
     }
+  };
+
+  const handleAddExternalFilterBuffers = (
+    items: Array<{ fileName: string; buffer: Uint8Array | ArrayBuffer }>,
+  ): void => {
+    if (!workbook || items.length === 0) return;
+    try {
+      const added: ImportedFilterFile[] = items.map((item, idx) => {
+        const sheet = parseExternalFilterWorkbook(item.buffer, item.fileName, workbook.dbHeaders);
+        const availableMatchKeys = getAvailableMatchKeys(sheet, workbook.dbRows);
+        const matchResult = matchExternalFilterToDb(sheet, workbook.dbRows, 'auto');
+        return {
+          id: `ext-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+          fileName: item.fileName,
+          sheet,
+          availableMatchKeys,
+          selectedMatchKey: 'auto',
+          matchResult,
+        };
+      });
+
+      setImportedFilterFiles((prev) => {
+        const next = [...prev, ...added];
+        if (!exportTemplateFileId && added[0]) {
+          setExportTemplateFileId(added[0].id);
+        }
+        return next;
+      });
+      setShowExternalFilterPanel(true);
+      setErrorMessage(null);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : '無法解析篩選 Excel 檔案');
+    }
+  };
+
+  const handleImportExternalFilterClick = async (): Promise<void> => {
+    if (!workbook) return;
+    setErrorMessage(null);
+    if (window.electronAPI?.openMultipleExcelFiles) {
+      setIsLoading(true);
+      try {
+        const res = await window.electronAPI.openMultipleExcelFiles();
+        if (!res.canceled && res.files && res.files.length > 0) {
+          handleAddExternalFilterBuffers(res.files);
+        }
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : '開啟篩選 Excel 檔案失敗');
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    if (window.electronAPI?.openExcelFile) {
+      setIsLoading(true);
+      try {
+        const res = await window.electronAPI.openExcelFile();
+        if (!res.canceled && res.buffer && res.fileName) {
+          handleAddExternalFilterBuffers([{ fileName: res.fileName, buffer: res.buffer }]);
+        }
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : '開啟篩選 Excel 檔案失敗');
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    externalFilterInputRef.current?.click();
+  };
+
+  const handleExternalFilterInputChange = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ): Promise<void> => {
+    const fileList = event.target.files;
+    if (!fileList || fileList.length === 0) return;
+    setIsLoading(true);
+    try {
+      const items = await Promise.all(
+        Array.from(fileList).map(async (file) => ({
+          fileName: file.name,
+          buffer: await file.arrayBuffer(),
+        })),
+      );
+      handleAddExternalFilterBuffers(items);
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : '讀取篩選 Excel 檔案失敗');
+    } finally {
+      setIsLoading(false);
+      event.target.value = '';
+    }
+  };
+
+  const handleChangeExternalMatchKey = (fileId: string, nextMatchKey: string): void => {
+    if (!workbook) return;
+    setImportedFilterFiles((prev) =>
+      prev.map((f) => {
+        if (f.id !== fileId) return f;
+        return {
+          ...f,
+          selectedMatchKey: nextMatchKey,
+          matchResult: matchExternalFilterToDb(f.sheet, workbook.dbRows, nextMatchKey),
+        };
+      }),
+    );
+  };
+
+  const handleRemoveExternalFilterFile = (fileId: string): void => {
+    setImportedFilterFiles((prev) => {
+      const next = prev.filter((f) => f.id !== fileId);
+      if (externalFilterMode === fileId) {
+        setExternalFilterMode('all');
+      }
+      if (exportTemplateFileId === fileId) {
+        setExportTemplateFileId(next[0]?.id ?? '');
+        if (exportColumnMode === 'from_file' && next.length === 0) {
+          setExportColumnMode('db_all');
+        }
+      }
+      if (next.length === 0) {
+        setExternalFilterMode('all');
+      }
+      return next;
+    });
+  };
+
+  const handleApplyFileColumnsToExport = (file: ImportedFilterFile): void => {
+    setExportTemplateFileId(file.id);
+    setExportColumnMode('from_file');
+    setCustomExportDbHeaders(file.sheet.sharedHeaders);
+    setCustomExtraHeaders(file.sheet.extraHeaders);
+    setShowExportColumnPanel(true);
+  };
+
+  const handleToggleCustomExportDbHeader = (header: string): void => {
+    if (!workbook) return;
+    setCustomExportDbHeaders((prev) => {
+      const set = new Set(prev);
+      if (set.has(header)) {
+        set.delete(header);
+      } else {
+        set.add(header);
+      }
+      // Keep original DB header order
+      return workbook.dbHeaders.filter((h) => set.has(h));
+    });
+  };
+
+  const handleAddCustomExtraHeader = (): void => {
+    const trimmed = newExtraHeaderInput.trim();
+    if (!trimmed) return;
+    setCustomExtraHeaders((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+    setNewExtraHeaderInput('');
+  };
+
+  const handleRemoveCustomExtraHeader = (header: string): void => {
+    setCustomExtraHeaders((prev) => prev.filter((h) => h !== header));
   };
 
   const handleImportClick = async (): Promise<void> => {
@@ -250,6 +465,46 @@ export default function App(): React.ReactElement {
     [workbook, columnPreset],
   );
 
+  const externalMatchedRowNumbers = useMemo(
+    () => computeExternalFilterRowSet(importedFilterFiles, externalFilterMode),
+    [importedFilterFiles, externalFilterMode],
+  );
+
+  const externalUnionRowNumbers = useMemo(
+    () => computeExternalFilterRowSet(importedFilterFiles, 'union') ?? new Set<number>(),
+    [importedFilterFiles],
+  );
+
+  const mergedExtraValuesByRowNumber = useMemo(
+    () => mergeExtraValuesFromFiles(importedFilterFiles),
+    [importedFilterFiles],
+  );
+
+  const activeOutputHeaders = useMemo(() => {
+    if (!workbook) return [];
+    const templateFile = importedFilterFiles.find((f) => f.id === exportTemplateFileId);
+    return resolveActiveOutputHeaders(
+      workbook.dbHeaders,
+      exportColumnMode,
+      templateFile?.sheet.headers ?? [],
+      customExportDbHeaders,
+      customExtraHeaders,
+    );
+  }, [
+    workbook,
+    importedFilterFiles,
+    exportTemplateFileId,
+    exportColumnMode,
+    customExportDbHeaders,
+    customExtraHeaders,
+  ]);
+
+  const activeExtraHeaders = useMemo(() => {
+    if (!workbook) return [];
+    const dbSet = new Set(workbook.dbHeaders);
+    return activeOutputHeaders.filter((h) => !dbSet.has(h));
+  }, [workbook, activeOutputHeaders]);
+
   const filteredDbRows = useMemo(
     () =>
       workbook
@@ -264,6 +519,7 @@ export default function App(): React.ReactElement {
             groupFilter: dbGroupFilter,
             selectionFilter,
             selectedRowNumbers,
+            externalMatchedRowNumbers,
             customRules,
             customRulesMode,
             showSectionHeaders,
@@ -282,6 +538,7 @@ export default function App(): React.ReactElement {
       dbGroupFilter,
       selectionFilter,
       selectedRowNumbers,
+      externalMatchedRowNumbers,
       customRules,
       customRulesMode,
       showSectionHeaders,
@@ -368,7 +625,16 @@ export default function App(): React.ReactElement {
       const summary = mode === 'selected' ? selectedExportSummary : filteredExportSummary;
       const suffix = mode === 'selected' ? '已勾選匯出' : '篩選匯出';
       const defaultFileName = buildDefaultExportFileName(workbook.fileName, suffix);
-      const buffer = buildExportWorkbookBuffer(workbook, { targetRecordRowNumbers: targetSet });
+      const buffer = buildExportWorkbookBuffer(workbook, {
+        targetRecordRowNumbers: targetSet,
+        outputHeaders: activeOutputHeaders,
+        populateExtraColumnValues,
+        extraValuesByRowNumber: mergedExtraValuesByRowNumber,
+      });
+      const colDesc =
+        exportColumnMode === 'db_all'
+          ? `完整 ${activeOutputHeaders.length} 欄`
+          : `自訂/沿用 ${activeOutputHeaders.length} 欄`;
 
       if (window.electronAPI?.saveExcelFile) {
         const res = await window.electronAPI.saveExcelFile({
@@ -377,7 +643,7 @@ export default function App(): React.ReactElement {
         });
         if (!res.canceled && res.filePath) {
           setExportNotice(
-            `已成功匯出 ${summary.recordCount} 筆名單（含 ${summary.sectionCount} 列上層分組標題列、完整 50 欄及組別/界別工作表）至：${res.filePath}`,
+            `已成功匯出 ${summary.recordCount} 筆名單（含 ${summary.sectionCount} 列上層分組標題列、${colDesc}及組別/界別工作表）至：${res.filePath}`,
           );
         }
         return;
@@ -396,7 +662,7 @@ export default function App(): React.ReactElement {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
       setExportNotice(
-        `已下載匯出檔 ${defaultFileName}（共 ${summary.recordCount} 筆名單、保留 ${summary.sectionCount} 列分組標題列及完整結構）`,
+        `已下載匯出檔 ${defaultFileName}（共 ${summary.recordCount} 筆名單、保留 ${summary.sectionCount} 列分組標題列、${colDesc}）`,
       );
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : '匯出 Excel 失敗');
@@ -507,6 +773,7 @@ export default function App(): React.ReactElement {
     if (dbCategoryFilter !== 'all') count++;
     if (dbGroupFilter !== 'all') count++;
     if (selectionFilter !== 'all') count++;
+    if (externalFilterMode !== 'all') count++;
     count += customRules.filter(
       (r) =>
         r.operator === 'is_empty' ||
@@ -524,6 +791,7 @@ export default function App(): React.ReactElement {
     dbCategoryFilter,
     dbGroupFilter,
     selectionFilter,
+    externalFilterMode,
     customRules,
   ]);
 
@@ -537,6 +805,15 @@ export default function App(): React.ReactElement {
         onChange={handleFileInputChange}
         className="hidden"
         data-testid="excel-file-input"
+      />
+      <input
+        ref={externalFilterInputRef}
+        type="file"
+        accept=".xlsx,.xls"
+        multiple
+        onChange={handleExternalFilterInputChange}
+        className="hidden"
+        data-testid="external-filter-file-input"
       />
 
       {/* Top Navigation Bar */}
@@ -595,6 +872,18 @@ export default function App(): React.ReactElement {
                 >
                   <CheckSquare className="h-4 w-4 text-blue-700" />
                   匯出已勾選 ({selectedExportSummary.recordCount} 筆)
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="default"
+                  disabled={isLoading}
+                  onClick={handleImportExternalFilterClick}
+                  title="匯入過去匯出的 Excel 作為本次篩選與選取條件（可多次匯入）"
+                >
+                  <Filter className="h-4 w-4 text-indigo-600" />
+                  匯入篩選 Excel
+                  {importedFilterFiles.length > 0 ? ` (${importedFilterFiles.length})` : ''}
                 </Button>
               </>
             )}
@@ -1260,6 +1549,33 @@ export default function App(): React.ReactElement {
                         </Button>
 
                         <Button
+                          variant={
+                            showExternalFilterPanel || importedFilterFiles.length > 0
+                              ? 'secondary'
+                              : 'outline'
+                          }
+                          size="sm"
+                          onClick={() => setShowExternalFilterPanel((prev) => !prev)}
+                        >
+                          <Filter className="h-3.5 w-3.5 text-indigo-600" />
+                          外部篩選 Excel{' '}
+                          {importedFilterFiles.length > 0 ? `(${importedFilterFiles.length})` : ''}
+                        </Button>
+
+                        <Button
+                          variant={
+                            showExportColumnPanel || exportColumnMode !== 'db_all'
+                              ? 'secondary'
+                              : 'outline'
+                          }
+                          size="sm"
+                          onClick={() => setShowExportColumnPanel((prev) => !prev)}
+                        >
+                          <FolderKanban className="h-3.5 w-3.5 text-emerald-600" />
+                          匯出欄位設定 ({activeOutputHeaders.length} 欄)
+                        </Button>
+
+                        <Button
                           variant={showSectionHeaders ? 'secondary' : 'outline'}
                           size="sm"
                           onClick={() => setShowSectionHeaders((prev) => !prev)}
@@ -1284,7 +1600,8 @@ export default function App(): React.ReactElement {
                       {/* Active Facet Pills */}
                       {(dbSectorFilter !== 'all' ||
                         dbCategoryFilter !== 'all' ||
-                        dbGroupFilter !== 'all') && (
+                        dbGroupFilter !== 'all' ||
+                        externalFilterMode !== 'all') && (
                         <div className="flex flex-wrap items-center gap-2 pt-1">
                           <span className="text-xs text-slate-500 flex items-center gap-1">
                             <Filter className="h-3 w-3" />
@@ -1320,6 +1637,24 @@ export default function App(): React.ReactElement {
                               <button
                                 type="button"
                                 onClick={() => setDbGroupFilter('all')}
+                                className="ml-1 hover:opacity-75"
+                              >
+                                ×
+                              </button>
+                            </Badge>
+                          )}
+                          {externalFilterMode !== 'all' && (
+                            <Badge variant="default" className="gap-1.5 bg-indigo-700 text-white">
+                              外部篩選檔：
+                              {externalFilterMode === 'union'
+                                ? '任一篩選檔命中 (聯集)'
+                                : externalFilterMode === 'intersection'
+                                  ? '全部篩選檔皆命中 (交集)'
+                                  : (importedFilterFiles.find((f) => f.id === externalFilterMode)
+                                      ?.fileName ?? externalFilterMode)}
+                              <button
+                                type="button"
+                                onClick={() => setExternalFilterMode('all')}
                                 className="ml-1 hover:opacity-75"
                               >
                                 ×
@@ -1456,6 +1791,471 @@ export default function App(): React.ReactElement {
                                 );
                               })}
                             </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* External Filter Excel Multi-Import Panel */}
+                      {showExternalFilterPanel && (
+                        <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3.5 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-800">
+                              <Filter className="h-3.5 w-3.5 text-indigo-600" />
+                              <span>
+                                外部匯出 Excel 篩選與選取（支援多次匯入，自動容錯增刪欄位與活動專屬欄位）
+                              </span>
+                              {importedFilterFiles.length > 0 && (
+                                <Badge variant="secondary" className="text-[11px]">
+                                  已匯入 {importedFilterFiles.length} 份檔案 · 聯集命中{' '}
+                                  {externalUnionRowNumbers.size} 筆主 DB 名單
+                                </Badge>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                variant="default"
+                                size="sm"
+                                onClick={handleImportExternalFilterClick}
+                                disabled={isLoading}
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                匯入篩選 Excel（可複選/多次匯入）
+                              </Button>
+
+                              {importedFilterFiles.length > 0 && (
+                                <>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={externalUnionRowNumbers.size === 0}
+                                    onClick={() =>
+                                      setSelectedRowNumbers((prev) =>
+                                        applyBatchSelection(
+                                          prev,
+                                          Array.from(externalUnionRowNumbers),
+                                          'select',
+                                        ),
+                                      )
+                                    }
+                                  >
+                                    勾選全部篩選檔命中 ({externalUnionRowNumbers.size})
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    disabled={externalUnionRowNumbers.size === 0}
+                                    onClick={() =>
+                                      setSelectedRowNumbers((prev) =>
+                                        applyBatchSelection(
+                                          prev,
+                                          Array.from(externalUnionRowNumbers),
+                                          'deselect',
+                                        ),
+                                      )
+                                    }
+                                  >
+                                    取消全部篩選檔勾選
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                      setImportedFilterFiles([]);
+                                      setExternalFilterMode('all');
+                                      if (exportColumnMode === 'from_file') {
+                                        setExportColumnMode('db_all');
+                                      }
+                                    }}
+                                    className="text-slate-500 hover:text-rose-600"
+                                  >
+                                    清空篩選檔
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+
+                          {importedFilterFiles.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-2 text-xs bg-white/80 rounded-md border border-indigo-100 px-3 py-2">
+                              <span className="text-slate-600 font-medium">
+                                表格過濾模式：
+                              </span>
+                              <select
+                                value={externalFilterMode}
+                                onChange={(e) => setExternalFilterMode(e.target.value)}
+                                className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                              >
+                                <option value="all">不限（顯示全部主 DB 名單）</option>
+                                <option value="union">
+                                  任一篩選檔命中（聯集 {externalUnionRowNumbers.size} 筆）
+                                </option>
+                                {importedFilterFiles.length > 1 && (
+                                  <option value="intersection">
+                                    全部篩選檔皆命中（交集{' '}
+                                    {computeExternalFilterRowSet(
+                                      importedFilterFiles,
+                                      'intersection',
+                                    )?.size ?? 0}{' '}
+                                    筆）
+                                  </option>
+                                )}
+                                {importedFilterFiles.map((f) => (
+                                  <option key={f.id} value={f.id}>
+                                    僅看檔案：{f.fileName}（命中{' '}
+                                    {f.matchResult.matchedDbRowNumbers.size} 筆）
+                                  </option>
+                                ))}
+                              </select>
+                              <span className="text-slate-400">
+                                提示：匯入時預設不會自動改動勾選狀態，請點擊下方檔案卡片的「勾選此檔命中名單」進行選取。
+                              </span>
+                            </div>
+                          )}
+
+                          {importedFilterFiles.length === 0 ? (
+                            <p className="text-xs text-slate-500">
+                              尚未匯入任何外部篩選 Excel。點擊右上角「匯入篩選 Excel」可選擇過去活動匯出的 Excel（即使欄位已被刪減或新增了活動專屬欄位皆可自動比對）。
+                            </p>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-2.5">
+                              {importedFilterFiles.map((file) => {
+                                const matchedNums = Array.from(
+                                  file.matchResult.matchedDbRowNumbers,
+                                );
+                                const selectedInFileCount = matchedNums.filter((r) =>
+                                  selectedRowNumbers.has(r),
+                                ).length;
+                                const isFilteringThisFile = externalFilterMode === file.id;
+
+                                return (
+                                  <div
+                                    key={file.id}
+                                    className="rounded-lg border border-slate-200 bg-white p-3 flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs"
+                                  >
+                                    <div className="space-y-1 min-w-[240px] flex-1">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <FileSpreadsheet className="h-4 w-4 text-indigo-600 shrink-0" />
+                                        <span className="font-semibold text-slate-900">
+                                          {file.fileName}
+                                        </span>
+                                        <Badge variant="secondary" className="text-[11px]">
+                                          命中主 DB {matchedNums.length} 筆（目前已勾選{' '}
+                                          {selectedInFileCount} / {matchedNums.length}）
+                                        </Badge>
+                                        <span className="text-slate-400">
+                                          外部檔共 {file.matchResult.totalExternalRowCount} 筆記錄（對應成功{' '}
+                                          {file.matchResult.matchedExternalRowCount} 筆 · 未對應{' '}
+                                          {file.matchResult.unmatchedExternalRowCount} 筆）
+                                        </span>
+                                      </div>
+
+                                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                                        <span>
+                                          共同 DB 欄位：{file.sheet.sharedHeaders.length} 欄
+                                        </span>
+                                        {file.sheet.extraHeaders.length > 0 && (
+                                          <span className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                                            活動專屬額外欄位 ({file.sheet.extraHeaders.length})：
+                                            {file.sheet.extraHeaders.join('、')}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-slate-500">比對依據：</span>
+                                        <select
+                                          value={file.selectedMatchKey}
+                                          onChange={(e) =>
+                                            handleChangeExternalMatchKey(file.id, e.target.value)
+                                          }
+                                          className="h-7 rounded border border-slate-200 bg-slate-50 px-2 text-xs text-slate-800"
+                                        >
+                                          {file.availableMatchKeys.map((opt) => (
+                                            <option key={opt.key} value={opt.key}>
+                                              {opt.label}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+
+                                      <Button
+                                        variant="default"
+                                        size="sm"
+                                        className="h-7 text-xs"
+                                        disabled={matchedNums.length === 0}
+                                        onClick={() =>
+                                          setSelectedRowNumbers((prev) =>
+                                            applyBatchSelection(prev, matchedNums, 'select'),
+                                          )
+                                        }
+                                      >
+                                        <CheckSquare className="h-3.5 w-3.5" />
+                                        勾選此檔命中 ({matchedNums.length})
+                                      </Button>
+
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 text-xs"
+                                        disabled={selectedInFileCount === 0}
+                                        onClick={() =>
+                                          setSelectedRowNumbers((prev) =>
+                                            applyBatchSelection(prev, matchedNums, 'deselect'),
+                                          )
+                                        }
+                                      >
+                                        取消勾選此檔
+                                      </Button>
+
+                                      <Button
+                                        variant={isFilteringThisFile ? 'secondary' : 'outline'}
+                                        size="sm"
+                                        className="h-7 text-xs"
+                                        onClick={() =>
+                                          setExternalFilterMode(
+                                            isFilteringThisFile ? 'all' : file.id,
+                                          )
+                                        }
+                                      >
+                                        {isFilteringThisFile ? '✓ 僅檢視此檔中' : '僅檢視此檔名單'}
+                                      </Button>
+
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 text-xs"
+                                        onClick={() => handleApplyFileColumnsToExport(file)}
+                                        title={`將匯出欄位設為此檔案的 ${file.sheet.headers.length} 個欄位`}
+                                      >
+                                        套用此檔欄位結構 ({file.sheet.headers.length}欄)
+                                      </Button>
+
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-7 px-2 text-slate-400 hover:text-rose-600"
+                                        onClick={() => handleRemoveExternalFilterFile(file.id)}
+                                        title="移除此篩選 Excel"
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Flexible Export Column Configuration Panel */}
+                      {showExportColumnPanel && (
+                        <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-3.5 space-y-3 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2 font-medium text-slate-800">
+                              <FolderKanban className="h-3.5 w-3.5 text-emerald-600" />
+                              <span>匯出 Excel 欄位設定（按需選擇要匯出的欄位與活動專屬額外欄位）</span>
+                              <Badge variant="secondary" className="text-[11px]">
+                                目前將匯出 {activeOutputHeaders.length} 欄
+                                {activeExtraHeaders.length > 0
+                                  ? `（含 ${activeExtraHeaders.length} 個活動額外欄位）`
+                                  : ''}
+                              </Badge>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Button
+                                variant={exportColumnMode === 'db_all' ? 'default' : 'outline'}
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => setExportColumnMode('db_all')}
+                              >
+                                主 DB 完整欄位 ({workbook.dbHeaders.length} 欄)
+                              </Button>
+                              <Button
+                                variant={exportColumnMode === 'from_file' ? 'default' : 'outline'}
+                                size="sm"
+                                className="h-7 text-xs"
+                                disabled={importedFilterFiles.length === 0}
+                                onClick={() => {
+                                  if (!exportTemplateFileId && importedFilterFiles[0]) {
+                                    setExportTemplateFileId(importedFilterFiles[0].id);
+                                  }
+                                  setExportColumnMode('from_file');
+                                }}
+                              >
+                                沿用篩選 Excel 欄位結構
+                              </Button>
+                              <Button
+                                variant={exportColumnMode === 'custom' ? 'default' : 'outline'}
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => setExportColumnMode('custom')}
+                              >
+                                自訂勾選與增刪欄位
+                              </Button>
+                            </div>
+                          </div>
+
+                          {exportColumnMode === 'from_file' && (
+                            <div className="flex flex-wrap items-center gap-2 bg-white rounded-md border border-emerald-100 p-2.5">
+                              <span className="text-slate-600">選擇要沿用欄位結構的篩選 Excel：</span>
+                              <select
+                                value={exportTemplateFileId}
+                                onChange={(e) => setExportTemplateFileId(e.target.value)}
+                                className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                              >
+                                {importedFilterFiles.map((f) => (
+                                  <option key={f.id} value={f.id}>
+                                    {f.fileName}（共 {f.sheet.headers.length} 欄：含{' '}
+                                    {f.sheet.sharedHeaders.length} 個 DB 欄 +{' '}
+                                    {f.sheet.extraHeaders.length} 個額外欄）
+                                  </option>
+                                ))}
+                              </select>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => {
+                                  const f = importedFilterFiles.find(
+                                    (item) => item.id === exportTemplateFileId,
+                                  );
+                                  if (f) {
+                                    setCustomExportDbHeaders(f.sheet.sharedHeaders);
+                                    setCustomExtraHeaders(f.sheet.extraHeaders);
+                                    setExportColumnMode('custom');
+                                  }
+                                }}
+                              >
+                                以此檔欄位為基礎進入自訂微調
+                              </Button>
+                            </div>
+                          )}
+
+                          {exportColumnMode === 'custom' && (
+                            <div className="space-y-2.5 bg-white rounded-md border border-emerald-100 p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="font-medium text-slate-700">
+                                  1. 勾選要保留的主 DB 欄位（已選 {customExportDbHeaders.length} /{' '}
+                                  {workbook.dbHeaders.length} 欄）：
+                                </span>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 text-[11px]"
+                                    onClick={() => setCustomExportDbHeaders(workbook.dbHeaders)}
+                                  >
+                                    全選 50 欄
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 text-[11px]"
+                                    onClick={() =>
+                                      setCustomExportDbHeaders(
+                                        getVisibleDbHeaders(workbook.dbHeaders, 'core'),
+                                      )
+                                    }
+                                  >
+                                    僅選核心 15 欄
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 text-[11px]"
+                                    onClick={() => setCustomExportDbHeaders(visibleDbHeaders)}
+                                  >
+                                    套用目前表格檢視欄位 ({visibleDbHeaders.length})
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5 max-h-40 overflow-y-auto p-1 border border-slate-100 rounded">
+                                {workbook.dbHeaders.map((h) => {
+                                  const checked = customExportDbHeaders.includes(h);
+                                  return (
+                                    <label
+                                      key={h}
+                                      className={`flex items-center gap-1.5 rounded px-2 py-1 cursor-pointer truncate ${
+                                        checked
+                                          ? 'bg-emerald-50 text-emerald-950 font-medium'
+                                          : 'text-slate-500 hover:bg-slate-50'
+                                      }`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => handleToggleCustomExportDbHeader(h)}
+                                        className="h-3.5 w-3.5 rounded border-slate-300"
+                                      />
+                                      <span className="truncate" title={h}>
+                                        {h}
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 pt-1">
+                                <span className="font-medium text-slate-700">
+                                  2. 本次活動專屬額外欄位（如：桌號、車牌、簽到）：
+                                </span>
+                                <Input
+                                  placeholder="輸入新欄位名稱..."
+                                  value={newExtraHeaderInput}
+                                  onChange={(e) => setNewExtraHeaderInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleAddCustomExtraHeader();
+                                    }
+                                  }}
+                                  className="h-7 w-44 text-xs"
+                                />
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 text-xs"
+                                  onClick={handleAddCustomExtraHeader}
+                                >
+                                  <Plus className="h-3.5 w-3.5" />
+                                  新增欄位
+                                </Button>
+
+                                {customExtraHeaders.map((eh) => (
+                                  <Badge key={eh} variant="secondary" className="gap-1">
+                                    + {eh}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveCustomExtraHeader(eh)}
+                                      className="ml-1 hover:text-rose-600"
+                                    >
+                                      ×
+                                    </button>
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {activeExtraHeaders.length > 0 && (
+                            <label className="flex items-center gap-2 bg-white rounded-md border border-amber-200 px-3 py-2 cursor-pointer text-slate-800">
+                              <input
+                                type="checkbox"
+                                checked={populateExtraColumnValues}
+                                onChange={(e) => setPopulateExtraColumnValues(e.target.checked)}
+                                className="h-4 w-4 rounded border-slate-300"
+                              />
+                              <span>
+                                <strong>帶入舊篩選檔中對應人員的額外欄位資料</strong>
+                                （目前額外欄位：{activeExtraHeaders.join('、')}；預設不勾選時僅保留空白欄位標題供本次活動重新填寫）
+                              </span>
+                            </label>
                           )}
                         </div>
                       )}

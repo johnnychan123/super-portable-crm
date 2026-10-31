@@ -9,6 +9,7 @@ import {
   formatPlatformLabel,
   getGreetingMessage,
   getNextSortState,
+  resolveActiveOutputHeaders,
 } from '../App';
 import { computeVirtualWindow, findJumpTargetIndex } from '../components/VirtualizedDbTable';
 
@@ -133,5 +134,22 @@ describe('Super Portable CRM Hello World', () => {
     expect(s2).toEqual({ column: '姓名', direction: 'desc' });
     const s3 = getNextSortState(s2, '姓名');
     expect(s3).toEqual({ column: null, direction: 'asc' });
+  });
+
+  test('resolveActiveOutputHeaders supports db_all, from_file, and custom column modes', () => {
+    const dbHeaders = ['組別', '姓名', '職位', 'PID'];
+    expect(resolveActiveOutputHeaders(dbHeaders, 'db_all', [], [], [])).toEqual(dbHeaders);
+    expect(
+      resolveActiveOutputHeaders(dbHeaders, 'from_file', ['組別', '姓名', '桌號'], [], []),
+    ).toEqual(['組別', '姓名', '桌號']);
+    expect(
+      resolveActiveOutputHeaders(
+        dbHeaders,
+        'custom',
+        [],
+        ['組別', '姓名'],
+        ['桌號', '車牌', '姓名'], // duplicate '姓名' should be deduplicated
+      ),
+    ).toEqual(['組別', '姓名', '桌號', '車牌']);
   });
 });

@@ -63,6 +63,34 @@ app.whenReady().then(() => {
     };
   });
 
+  ipcMain.handle('excel:open-multiple-files', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '選取要匯入作為篩選條件的 Excel 檔案（可複選）',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Excel 活頁簿 (*.xlsx, *.xls)', extensions: ['xlsx', 'xls'] }],
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { canceled: true };
+    }
+
+    const files = await Promise.all(
+      result.filePaths.map(async (filePath) => {
+        const fileBuffer = await fs.readFile(filePath);
+        return {
+          fileName: path.basename(filePath),
+          filePath,
+          buffer: new Uint8Array(fileBuffer),
+        };
+      }),
+    );
+
+    return {
+      canceled: false,
+      files,
+    };
+  });
+
   ipcMain.handle(
     'excel:save-file',
     async (_event, payload: { defaultFileName: string; buffer: Uint8Array }) => {

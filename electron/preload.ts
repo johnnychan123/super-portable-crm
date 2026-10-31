@@ -17,6 +17,17 @@ export interface ExcelOpenFileResult {
   buffer?: Uint8Array;
 }
 
+export interface ExcelOpenedFileItem {
+  fileName: string;
+  filePath?: string;
+  buffer: Uint8Array;
+}
+
+export interface ExcelOpenMultipleFilesResult {
+  canceled: boolean;
+  files?: ExcelOpenedFileItem[];
+}
+
 export interface ExcelSaveFilePayload {
   defaultFileName: string;
   buffer: Uint8Array;
@@ -37,6 +48,8 @@ const electronAPI = {
   },
   getAppInfo: (): Promise<AppRuntimeInfo> => ipcRenderer.invoke('app:get-info'),
   openExcelFile: (): Promise<ExcelOpenFileResult> => ipcRenderer.invoke('excel:open-file'),
+  openMultipleExcelFiles: (): Promise<ExcelOpenMultipleFilesResult> =>
+    ipcRenderer.invoke('excel:open-multiple-files'),
   saveExcelFile: (payload: ExcelSaveFilePayload): Promise<ExcelSaveFileResult> =>
     ipcRenderer.invoke('excel:save-file', payload),
 };

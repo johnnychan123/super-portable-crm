@@ -67,7 +67,7 @@ export function buildExportWorkbookBuffer(
     const outRowIndex = i + 1; // 0-based index in worksheet (row 0 is header)
 
     if (row.kind === 'section') {
-      const rowCells = headersToUse.map((header) =>
+      const rowCells: string[] = headersToUse.map((header) =>
         dbHeaderSet.has(header) ? (row.values[header] ?? '') : '',
       );
 
@@ -78,7 +78,7 @@ export function buildExportWorkbookBuffer(
             e: { c: nameColIdx + 1, r: outRowIndex },
           });
         }
-      } else if (rowCells.length > 0 && rowCells.every((c) => c === '')) {
+      } else if (rowCells.length > 0 && !rowCells.some((c) => c !== '')) {
         rowCells[0] =
           row.values['姓名'] || row.currentSectionLabel || row.sectionCode || '';
       }
