@@ -3,6 +3,9 @@ import type { DbRowItem, ParsedCrmWorkbook } from './excelParser';
 
 export interface ExportCrmOptions {
   targetRecordRowNumbers: ReadonlySet<number>;
+  outputHeaders?: string[];
+  populateExtraColumnValues?: boolean;
+  extraValuesByRowNumber?: ReadonlyMap<number, Record<string, string>>;
 }
 
 export interface ExportPreviewSummary {
@@ -48,21 +51,50 @@ export function buildExportWorkbookBuffer(
   const { rowsToExport } = resolveExportDbRows(workbook, options);
   const outWb = XLSX.utils.book_new();
 
-  // 1. Build DB worksheet with all original headers in original order
-  const dbMatrix: string[][] = [workbook.dbHeaders];
+  const headersToUse =
+    options.outputHeaders && options.outputHeaders.length > 0
+      ? options.outputHeaders
+      : workbook.dbHeaders;
+  const dbHeaderSet = new Set(workbook.dbHeaders);
+  const nameColIdx = headersToUse.indexOf('姓名');
+
+  // 1. Build DB worksheet with selected headers in order
+  const dbMatrix: string[][] = [headersToUse];
   const sectionMerges: XLSX.Range[] = [];
 
   for (let i = 0; i < rowsToExport.length; i++) {
     const row = rowsToExport[i];
     const outRowIndex = i + 1; // 0-based index in worksheet (row 0 is header)
-    const rowCells = workbook.dbHeaders.map((header) => row.values[header] ?? '');
-    dbMatrix.push(rowCells);
 
-    if (row.kind === 'section' && workbook.dbHeaders.length >= 8) {
-      sectionMerges.push({
-        s: { c: 6, r: outRowIndex },
-        e: { c: 7, r: outRowIndex },
+    if (row.kind === 'section') {
+      const rowCells = headersToUse.map((header) =>
+        dbHeaderSet.has(header) ? (row.values[header] ?? '') : '',
+      );
+
+      if (nameColIdx >= 0) {
+        if (headersToUse[nameColIdx + 1] === '職位') {
+          sectionMerges.push({
+            s: { c: nameColIdx, r: outRowIndex },
+            e: { c: nameColIdx + 1, r: outRowIndex },
+          });
+        }
+      } else if (rowCells.length > 0 && rowCells.every((c) => c === '')) {
+        rowCells[0] =
+          row.values['姓名'] || row.currentSectionLabel || row.sectionCode || '';
+      }
+
+      dbMatrix.push(rowCells);
+    } else {
+      const extraRowVals = options.populateExtraColumnValues
+        ? options.extraValuesByRowNumber?.get(row.rowNumber)
+        : undefined;
+      const rowCells = headersToUse.map((header) => {
+        if (dbHeaderSet.has(header)) {
+          return row.values[header] ?? '';
+        }
+        return extraRowVals?.[header] ?? '';
       });
+      dbMatrix.push(rowCells);
     }
   }
 

@@ -74,4 +74,64 @@ describe('excelExporter', () => {
       'test_篩選匯出_20261031_1405.xlsx',
     );
   });
+
+  test('exports custom subset of DB columns plus extra event columns (blank by default, or populated when enabled)', () => {
+    const customHeaders = ['組別', '姓名', '職位', '桌號', '車牌'];
+    const extraMap = new Map<number, Record<string, string>>([
+      [5, { 桌號: 'VIP-1', 車牌: 'MA-00-01' }],
+      [50, { 桌號: 'B-12', 車牌: 'MZ-99-99' }],
+    ]);
+
+    // Case 1: populateExtraColumnValues = false (default: blank extra columns)
+    const blankExtraBuf = buildExportWorkbookBuffer(workbook, {
+      targetRecordRowNumbers: new Set([5, 50]),
+      outputHeaders: customHeaders,
+      populateExtraColumnValues: false,
+      extraValuesByRowNumber: extraMap,
+    });
+    const wbBlank = XLSX.read(blankExtraBuf, { type: 'array' });
+    const rowsBlank = XLSX.utils.sheet_to_json<string[]>(wbBlank.Sheets['DB'], {
+      header: 1,
+      defval: '',
+    });
+    expect(rowsBlank[0]).toEqual(customHeaders);
+    // Section merge shifts to columns 1..2 (姓名..職位)
+    expect(wbBlank.Sheets['DB']['!merges']?.[0]).toEqual({
+      s: { c: 1, r: 1 },
+      e: { c: 2, r: 1 },
+    });
+    // Record row 5 is at index 4 (after header + 3 ancestor sections 2,3,4)
+    expect(rowsBlank[4]?.[3]).toBe('');
+    expect(rowsBlank[4]?.[4]).toBe('');
+
+    // Case 2: populateExtraColumnValues = true (carries over extra values for matched records)
+    const filledExtraBuf = buildExportWorkbookBuffer(workbook, {
+      targetRecordRowNumbers: new Set([5, 50]),
+      outputHeaders: customHeaders,
+      populateExtraColumnValues: true,
+      extraValuesByRowNumber: extraMap,
+    });
+    const wbFilled = XLSX.read(filledExtraBuf, { type: 'array' });
+    const rowsFilled = XLSX.utils.sheet_to_json<string[]>(wbFilled.Sheets['DB'], {
+      header: 1,
+      defval: '',
+    });
+    expect(rowsFilled[4]?.[3]).toBe('VIP-1');
+    expect(rowsFilled[4]?.[4]).toBe('MA-00-01');
+  });
+
+  test('falls back section header label to first column when 姓名 is omitted from outputHeaders', () => {
+    const noNameHeaders = ['組別', '出席活動', '桌號'];
+    const buf = buildExportWorkbookBuffer(workbook, {
+      targetRecordRowNumbers: new Set([5]),
+      outputHeaders: noNameHeaders,
+    });
+    const wbOut = XLSX.read(buf, { type: 'array' });
+    const matrix = XLSX.utils.sheet_to_json<string[]>(wbOut.Sheets['DB'], {
+      header: 1,
+      defval: '',
+    });
+    expect(matrix[0]).toEqual(noNameHeaders);
+    expect(matrix[1]?.[0]).toContain('MA000');
+  });
 });
