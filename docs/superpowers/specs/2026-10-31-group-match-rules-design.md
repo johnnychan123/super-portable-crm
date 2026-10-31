@@ -37,3 +37,20 @@
      - **設定該規則的對比依據 (`matchKey`)**。
      - **Prefix 快速選取列**：輸入框（如輸入 `MZ`、`MA`），即時計算符合該前綴的組別數，提供 **「+ 全選此前綴組別 (N)」** 與 **「- 取消此前綴組別」** 按鈕（在輸入框按 Enter 亦可直接將符合前綴的組別全數加入）。
      - **已選組別標籤 (Chips) 與微調**：顯示目前已選取的組別代碼與名稱（可點擊 `×` 移除單一組別，或點擊「清空已選」），下方提供緊湊的多選 Checkbox 網格供單獨勾選/取消勾選。
+
+## 5. 自訂複合欄對比依據 (Custom Composite Match Key Columns)
+1. **編碼與解析 (`src/lib/externalFilterMatcher.ts`)**：
+   - 新增 `CUSTOM_MATCH_KEY_PREFIX = 'custom:'` 與分隔符 `'\u001f'`：
+     - `isCustomMatchKey(matchKey: string): boolean`：判斷是否為 `'custom'` 或以 `'custom:'` 開頭。
+     - `encodeCustomMatchKey(columns: ReadonlyArray<string>): string`：將使用者勾選的多個欄位（去除空白與重複）編碼為 `custom:<col1>\u001f<col2>...`（若尚未勾選則為 `'custom:'`）。
+     - `parseCustomMatchKeyColumns(matchKey: string): string[]`：從 `custom:...` 解析出欄位陣列。
+   - `resolveMatchKeyColumns(matchKey, sheet, dbRows)`：
+     - 若 `isCustomMatchKey(matchKey)` 為真，解析出指定欄位陣列 `cols`；僅當 `cols.length > 0` 且所有欄位皆存在於 `sheet.sharedHeaders` 時回傳 `cols`，否則回傳 `[]`（確保外部檔缺漏任一自訂複合欄時嚴格不誤配）。
+   - 新增 `prioritizeMatchColumns(headers: ReadonlyArray<string>): string[]`：
+     - 將常用識別欄位（`組別`、`PID`、`Pf.ID`、`姓名`、`中文名(沒有稱謂)`、`英文名(沒有稱謂)`、`手提電話`、`電郵`、`公司名稱`）優先排在最前方，其餘欄位依原順序排列，方便使用者一鍵快速勾選。
+2. **UI 互動 (`src/App.tsx`)**：
+   - 在「預設對比依據」、「各組別專屬對比規則」、以及「單一篩選檔對比依據」的下拉選單中，均提供 `自訂複合欄（任意勾選多欄組合）...` 選項。
+   - 當選擇自訂複合欄時，直接在旁/下方展開內嵌的「自訂複合欄勾選區」：
+     - 顯示目前已選欄位組合標籤（如 `組別 + 姓名 + 手提電話`，可點擊 `×` 移除單一欄或清空）。
+     - 提供欄位快速點選按鈕/核取清單（常用欄位優先顯示，並可點擊切換任意多個欄位組合），每次勾選/取消即時重算篩選命中結果。
+
