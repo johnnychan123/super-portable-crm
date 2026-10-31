@@ -6,6 +6,8 @@ import { loadWindowContent, resolveAppPaths } from '../../electron/windowLoader'
 import {
   APP_VERSION,
   applyBatchSelection,
+  formatCustomCompositeSummary,
+  formatGroupSelectionSummary,
   formatPlatformLabel,
   getGreetingMessage,
   getNextSortState,
@@ -252,5 +254,18 @@ describe('Super Portable CRM Hello World', () => {
     expect(resolveInitialCustomMatchKey(existingCustom, ['組別', '姓名', '手提電話'])).toBe(
       existingCustom,
     );
+
+    // Compact summary formatters for Modal trigger badges
+    expect(formatGroupSelectionSummary([])).toBe('尚未選取組別');
+    expect(formatGroupSelectionSummary(['MZ001', 'MZ002'], 3)).toBe(
+      '已選 2 個組別（MZ001, MZ002）',
+    );
+    expect(formatGroupSelectionSummary(['MZ001', 'MZ002', 'MZ003', 'MZ004'], 3)).toBe(
+      '已選 4 個組別（MZ001, MZ002, MZ003 等）',
+    );
+    expect(formatCustomCompositeSummary('custom:')).toBe('尚未選取欄位');
+    expect(
+      formatCustomCompositeSummary(encodeCustomMatchKey(['組別', '姓名', '手提電話'])),
+    ).toBe('組別 + 姓名 + 手提電話');
   });
 });

@@ -19,6 +19,7 @@ import {
   Trash2,
   Upload,
   Users,
+  X,
 } from 'lucide-react';
 import type { AppRuntimeInfo } from './vite-env';
 import {
@@ -175,6 +176,29 @@ export function reconcileExternalFilterState(
   };
 }
 
+export function formatGroupSelectionSummary(
+  groupCodes: ReadonlyArray<string>,
+  maxPreview = 3,
+): string {
+  const cleaned = groupCodes.map((c) => c.trim()).filter(Boolean);
+  if (cleaned.length === 0) {
+    return '尚未選取組別';
+  }
+  const preview = cleaned.slice(0, maxPreview).join(', ');
+  if (cleaned.length <= maxPreview) {
+    return `已選 ${cleaned.length} 個組別（${preview}）`;
+  }
+  return `已選 ${cleaned.length} 個組別（${preview} 等）`;
+}
+
+export function formatCustomCompositeSummary(matchKey: string): string {
+  const cols = parseCustomMatchKeyColumns(matchKey);
+  if (cols.length === 0) {
+    return '尚未選取欄位';
+  }
+  return cols.join(' + ');
+}
+
 export function resolveInitialCustomMatchKey(
   currentKey: string,
   availableColumns: ReadonlyArray<string>,
@@ -287,7 +311,21 @@ export default function App(): React.ReactElement {
   const [externalFilterMode, setExternalFilterMode] = useState<ExternalFilterViewMode>('all');
   const [defaultExternalMatchKey, setDefaultExternalMatchKey] = useState<string>('auto');
   const [groupMatchOverrides, setGroupMatchOverrides] = useState<GroupMatchOverride[]>([]);
-  const [rulePrefixInputs, setRulePrefixInputs] = useState<Record<string, string>>({});
+  const [groupPickerModal, setGroupPickerModal] = useState<{
+    ruleId: string;
+    ruleIndex: number;
+    draftGroupCodes: string[];
+    prefixInput: string;
+  } | null>(null);
+  const [customCompositeModal, setCustomCompositeModal] = useState<{
+    target:
+      | { type: 'default' }
+      | { type: 'rule'; ruleId: string; ruleIndex: number }
+      | { type: 'file'; fileId: string; fileName: string };
+    availableColumns: string[];
+    draftColumns: string[];
+    searchQuery: string;
+  } | null>(null);
 
   // Export column configuration ("按需選擇匯出欄位")
   const [showExportColumnPanel, setShowExportColumnPanel] = useState(false);
@@ -358,7 +396,8 @@ export default function App(): React.ReactElement {
       setImportedFilterFiles([]);
       setDefaultExternalMatchKey('auto');
       setGroupMatchOverrides([]);
-      setRulePrefixInputs({});
+      setGroupPickerModal(null);
+      setCustomCompositeModal(null);
       setExportColumnMode('db_all');
       setExportTemplateFileId('');
       setCustomExportDbHeaders(parsed.dbHeaders);
@@ -515,10 +554,11 @@ export default function App(): React.ReactElement {
 
   const handleAddGroupMatchOverride = (): void => {
     if (!workbook) return;
+    const newId = `grp-match-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const nextOverrides: GroupMatchOverride[] = [
       ...groupMatchOverrides,
       {
-        id: `grp-match-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id: newId,
         groupCodes: [],
         matchKey: '組別+姓名',
       },
@@ -530,6 +570,12 @@ export default function App(): React.ReactElement {
         groupOverrides: nextOverrides,
       }),
     );
+    setGroupPickerModal({
+      ruleId: newId,
+      ruleIndex: nextOverrides.length,
+      draftGroupCodes: [],
+      prefixInput: '',
+    });
   };
 
   const handleUpdateGroupMatchOverride = (
@@ -549,145 +595,79 @@ export default function App(): React.ReactElement {
     );
   };
 
-  const handleToggleGroupInOverride = (ruleId: string, groupCode: string): void => {
+  const handleOpenGroupPickerModal = (ruleId: string, ruleIndex: number): void => {
     const rule = groupMatchOverrides.find((r) => r.id === ruleId);
     if (!rule) return;
     const currentCodes = [
       ...(rule.groupCodes ?? []),
       ...(rule.groupCode ? [rule.groupCode] : []),
     ];
-    const nextCodes = toggleGroupCodeInList(currentCodes, groupCode);
-    handleUpdateGroupMatchOverride(ruleId, {
-      groupCodes: nextCodes,
-      groupCode: undefined,
+    setGroupPickerModal({
+      ruleId,
+      ruleIndex,
+      draftGroupCodes: currentCodes,
+      prefixInput: '',
     });
   };
 
-  const handlePrefixBatchSelectInOverride = (
-    ruleId: string,
-    prefix: string,
-    mode: 'select' | 'deselect',
-  ): void => {
-    const rule = groupMatchOverrides.find((r) => r.id === ruleId);
-    if (!rule) return;
-    const currentCodes = [
-      ...(rule.groupCodes ?? []),
-      ...(rule.groupCode ? [rule.groupCode] : []),
-    ];
-    const nextCodes = applyPrefixGroupSelection(
-      currentCodes,
-      allGroupOverrideOptions,
-      prefix,
-      mode,
-    );
-    handleUpdateGroupMatchOverride(ruleId, {
-      groupCodes: nextCodes,
+  const handleConfirmGroupPickerModal = (): void => {
+    if (!groupPickerModal) return;
+    handleUpdateGroupMatchOverride(groupPickerModal.ruleId, {
+      groupCodes: groupPickerModal.draftGroupCodes,
       groupCode: undefined,
     });
+    setGroupPickerModal(null);
+  };
+
+  const handleOpenCustomCompositeModal = (
+    target:
+      | { type: 'default' }
+      | { type: 'rule'; ruleId: string; ruleIndex: number }
+      | { type: 'file'; fileId: string; fileName: string },
+    currentKey: string,
+    availableColumns: ReadonlyArray<string>,
+  ): void => {
+    const initializedKey = resolveInitialCustomMatchKey(currentKey, availableColumns);
+    setCustomCompositeModal({
+      target,
+      availableColumns: [...availableColumns],
+      draftColumns: parseCustomMatchKeyColumns(initializedKey),
+      searchQuery: '',
+    });
+  };
+
+  const handleConfirmCustomCompositeModal = (): void => {
+    if (!customCompositeModal || customCompositeModal.draftColumns.length === 0) return;
+    const nextKey = encodeCustomMatchKey(customCompositeModal.draftColumns);
+    const { target } = customCompositeModal;
+    if (target.type === 'default') {
+      handleChangeDefaultExternalMatchKey(nextKey);
+    } else if (target.type === 'rule') {
+      handleUpdateGroupMatchOverride(target.ruleId, { matchKey: nextKey });
+    } else if (target.type === 'file') {
+      handleChangeExternalMatchKey(target.fileId, nextKey);
+    }
+    setCustomCompositeModal(null);
   };
 
   const handleRemoveGroupMatchOverride = (id: string): void => {
     if (!workbook) return;
     const nextOverrides = groupMatchOverrides.filter((item) => item.id !== id);
     setGroupMatchOverrides(nextOverrides);
-    setRulePrefixInputs((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+    if (groupPickerModal?.ruleId === id) {
+      setGroupPickerModal(null);
+    }
+    if (
+      customCompositeModal?.target.type === 'rule' &&
+      customCompositeModal.target.ruleId === id
+    ) {
+      setCustomCompositeModal(null);
+    }
     setImportedFilterFiles((prev) =>
       recomputeFilesWithGlobalRules(prev, workbook.dbRows, {
         defaultMatchKey: defaultExternalMatchKey,
         groupOverrides: nextOverrides,
       }),
-    );
-  };
-
-  const renderCustomCompositeColumnPicker = (
-    currentMatchKey: string,
-    availableColumns: ReadonlyArray<string>,
-    onChangeKey: (nextKey: string) => void,
-  ): React.JSX.Element | null => {
-    if (!isCustomMatchKey(currentMatchKey)) return null;
-    const selectedCols = parseCustomMatchKeyColumns(currentMatchKey);
-    const selectedSet = new Set(selectedCols);
-    const orderedCols = prioritizeMatchColumns(availableColumns);
-
-    return (
-      <div className="rounded-md border border-indigo-200 bg-indigo-50/40 p-2.5 space-y-2 text-xs">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-semibold text-indigo-950">
-              自訂複合欄組合（已選 {selectedCols.length} 欄）：
-            </span>
-            {selectedCols.length === 0 ? (
-              <span className="text-rose-600 font-medium">
-                請點擊下方欄位勾選至少 1 個比對欄位
-              </span>
-            ) : (
-              selectedCols.map((col, idx) => (
-                <React.Fragment key={col}>
-                  {idx > 0 && <span className="text-indigo-500 font-bold">+</span>}
-                  <Badge
-                    variant="secondary"
-                    className="gap-1 bg-indigo-600 text-white hover:bg-indigo-700 text-[11px]"
-                  >
-                    <span>{col}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onChangeKey(toggleColumnInCustomMatchKey(currentMatchKey, col))
-                      }
-                      className="ml-0.5 text-indigo-100 hover:text-white"
-                      title={`移除「${col}」`}
-                    >
-                      ×
-                    </button>
-                  </Badge>
-                </React.Fragment>
-              ))
-            )}
-          </div>
-          {selectedCols.length > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-[11px] text-slate-500 hover:text-rose-600"
-              onClick={() => onChangeKey(CUSTOM_MATCH_KEY_PREFIX)}
-            >
-              清空已選欄位
-            </Button>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1 max-h-28 overflow-y-auto rounded border border-indigo-100 bg-white p-1.5">
-          {orderedCols.map((col) => {
-            const checked = selectedSet.has(col);
-            return (
-              <button
-                key={col}
-                type="button"
-                onClick={() =>
-                  onChangeKey(toggleColumnInCustomMatchKey(currentMatchKey, col))
-                }
-                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] border transition-colors ${
-                  checked
-                    ? 'border-indigo-500 bg-indigo-50 text-indigo-950 font-semibold'
-                    : 'border-slate-200 bg-slate-50/60 text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  readOnly
-                  className="h-3 w-3 rounded border-slate-300 pointer-events-none"
-                />
-                <span>{col}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
     );
   };
 
@@ -701,6 +681,12 @@ export default function App(): React.ReactElement {
         exportColumnMode,
       },
     );
+    if (
+      customCompositeModal?.target.type === 'file' &&
+      customCompositeModal.target.fileId === fileId
+    ) {
+      setCustomCompositeModal(null);
+    }
     setImportedFilterFiles(nextFiles);
     setExternalFilterMode(reconciled.externalFilterMode);
     setExportTemplateFileId(reconciled.exportTemplateFileId);
@@ -2196,6 +2182,9 @@ export default function App(): React.ReactElement {
                                         exportColumnMode,
                                       });
                                       setImportedFilterFiles([]);
+                                      if (customCompositeModal?.target.type === 'file') {
+                                        setCustomCompositeModal(null);
+                                      }
                                       setExternalFilterMode(reconciled.externalFilterMode);
                                       setExportTemplateFileId(reconciled.exportTemplateFileId);
                                       setExportColumnMode(reconciled.exportColumnMode);
@@ -2224,13 +2213,15 @@ export default function App(): React.ReactElement {
                                   }
                                   onChange={(e) => {
                                     const val = e.target.value;
-                                    const nextKey = isCustomMatchKey(val)
-                                      ? resolveInitialCustomMatchKey(
-                                          defaultExternalMatchKey,
-                                          workbook.dbHeaders,
-                                        )
-                                      : val;
-                                    handleChangeDefaultExternalMatchKey(nextKey);
+                                    if (isCustomMatchKey(val)) {
+                                      handleOpenCustomCompositeModal(
+                                        { type: 'default' },
+                                        defaultExternalMatchKey,
+                                        workbook.dbHeaders,
+                                      );
+                                    } else {
+                                      handleChangeDefaultExternalMatchKey(val);
+                                    }
                                   }}
                                   className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
                                 >
@@ -2240,6 +2231,30 @@ export default function App(): React.ReactElement {
                                     </option>
                                   ))}
                                 </select>
+                                {isCustomMatchKey(defaultExternalMatchKey) && (
+                                  <>
+                                    <Badge
+                                      variant="secondary"
+                                      className="bg-indigo-100 text-indigo-950 text-[11px]"
+                                    >
+                                      複合欄：{formatCustomCompositeSummary(defaultExternalMatchKey)}
+                                    </Badge>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-7 text-xs"
+                                      onClick={() =>
+                                        handleOpenCustomCompositeModal(
+                                          { type: 'default' },
+                                          defaultExternalMatchKey,
+                                          workbook.dbHeaders,
+                                        )
+                                      }
+                                    >
+                                      設定複合欄...
+                                    </Button>
+                                  </>
+                                )}
                                 <span className="text-slate-400">
                                   （未單獨指定規則的組別皆以此預設依據比對）
                                 </span>
@@ -2256,288 +2271,131 @@ export default function App(): React.ReactElement {
                               </Button>
                             </div>
 
-                            {renderCustomCompositeColumnPicker(
-                              defaultExternalMatchKey,
-                              workbook.dbHeaders,
-                              handleChangeDefaultExternalMatchKey,
-                            )}
-
                             {groupMatchOverrides.length > 0 && (
-                              <div className="space-y-2.5 pt-1 border-t border-slate-100">
+                              <div className="space-y-1.5 pt-2 border-t border-slate-100">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <span className="font-medium text-slate-700">
-                                    各組別專屬對比依據（共 {groupMatchOverrides.length} 條規則 · 支援多選組別與輸入 Prefix 快速批次選取）：
+                                    各組別專屬對比依據（共 {groupMatchOverrides.length} 條規則）：
                                   </span>
                                 </div>
 
-                                <div className="space-y-2.5">
+                                <div className="space-y-1.5">
                                   {groupMatchOverrides.map((rule, ruleIdx) => {
                                     const selectedCodes = [
                                       ...(rule.groupCodes ?? []),
                                       ...(rule.groupCode ? [rule.groupCode] : []),
                                     ];
-                                    const selectedUpperSet = new Set(
-                                      selectedCodes.map((c) => c.trim().toUpperCase()),
-                                    );
-                                    const prefixVal = rulePrefixInputs[rule.id] ?? '';
-                                    const filteredGroupOptions = filterGroupsByPrefix(
-                                      allGroupOverrideOptions,
-                                      prefixVal,
-                                    );
-                                    const groupMetaByUpper = new Map(
-                                      allGroupOverrideOptions.map((g) => [
-                                        g.code.toUpperCase(),
-                                        g,
-                                      ]),
-                                    );
 
                                     return (
                                       <div
                                         key={rule.id}
-                                        className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2"
+                                        className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50/70 px-3 py-2"
                                       >
-                                        {/* Row 1: Rule Match Key & Actions */}
-                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                          <div className="flex flex-wrap items-center gap-2">
-                                            <Badge variant="outline" className="bg-white">
-                                              規則 #{ruleIdx + 1}
-                                            </Badge>
-                                            <span className="text-slate-700 font-medium">
-                                              使用對比依據：
-                                            </span>
-                                            <select
-                                              value={
-                                                isCustomMatchKey(rule.matchKey)
-                                                  ? CUSTOM_MATCH_KEY_PREFIX
-                                                  : rule.matchKey
-                                              }
-                                              onChange={(e) => {
-                                                const val = e.target.value;
-                                                const nextKey = isCustomMatchKey(val)
-                                                  ? resolveInitialCustomMatchKey(
-                                                      rule.matchKey,
-                                                      workbook.dbHeaders,
-                                                    )
-                                                  : val;
-                                                handleUpdateGroupMatchOverride(rule.id, {
-                                                  matchKey: nextKey,
-                                                });
-                                              }}
-                                              className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
-                                            >
-                                              {getGlobalMatchKeyOptions(workbook.dbHeaders).map(
-                                                (opt) => (
-                                                  <option key={opt.key} value={opt.key}>
-                                                    {opt.label}
-                                                  </option>
-                                                ),
-                                              )}
-                                            </select>
-                                            <Badge variant="secondary" className="text-[11px]">
-                                              已選 {selectedCodes.length} 個組別
-                                            </Badge>
-                                          </div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <Badge variant="outline" className="bg-white">
+                                            規則 #{ruleIdx + 1}
+                                          </Badge>
 
-                                          <div className="flex items-center gap-1.5">
-                                            {selectedCodes.length > 0 && (
-                                              <Button
-                                                variant="ghost"
-                                                size="sm"
-                                                onClick={() =>
-                                                  handleUpdateGroupMatchOverride(rule.id, {
-                                                    groupCodes: [],
-                                                    groupCode: undefined,
-                                                  })
-                                                }
-                                                className="h-7 text-xs text-slate-500 hover:text-rose-600"
-                                              >
-                                                清空已選組別
-                                              </Button>
-                                            )}
-                                            <Button
-                                              variant="ghost"
-                                              size="sm"
-                                              onClick={() =>
-                                                handleRemoveGroupMatchOverride(rule.id)
-                                              }
-                                              className="h-7 px-2 text-slate-400 hover:text-rose-600"
-                                              title="移除此組別規則"
-                                            >
-                                              <Trash2 className="h-3.5 w-3.5" />
-                                            </Button>
-                                          </div>
-                                        </div>
-
-                                        {renderCustomCompositeColumnPicker(
-                                          rule.matchKey,
-                                          workbook.dbHeaders,
-                                          (nextKey) =>
-                                            handleUpdateGroupMatchOverride(rule.id, {
-                                              matchKey: nextKey,
-                                            }),
-                                        )}
-
-                                        {/* Row 2: Prefix Quick Filter & Batch Select Bar */}
-                                        <div className="flex flex-wrap items-center gap-2 bg-white rounded border border-slate-200 px-2.5 py-1.5">
                                           <span className="text-slate-600 font-medium">
-                                            Prefix 快速選取組別：
+                                            套用組別：
                                           </span>
-                                          <Input
-                                            placeholder="輸入組別前綴或名稱 (如 MZ、MA01，按 Enter 直接全選)..."
-                                            value={prefixVal}
-                                            onChange={(e) =>
-                                              setRulePrefixInputs((prev) => ({
-                                                ...prev,
-                                                [rule.id]: e.target.value,
-                                              }))
+                                          <Badge
+                                            variant={
+                                              selectedCodes.length > 0 ? 'secondary' : 'warning'
                                             }
-                                            onKeyDown={(e) => {
-                                              if (e.key === 'Enter' && prefixVal.trim()) {
-                                                e.preventDefault();
-                                                handlePrefixBatchSelectInOverride(
-                                                  rule.id,
-                                                  prefixVal,
-                                                  'select',
-                                                );
-                                              }
-                                            }}
-                                            className="h-7 w-64 text-xs"
-                                          />
-                                          <Button
-                                            variant="default"
-                                            size="sm"
-                                            className="h-7 text-xs"
-                                            disabled={filteredGroupOptions.length === 0}
-                                            onClick={() =>
-                                              handlePrefixBatchSelectInOverride(
-                                                rule.id,
-                                                prefixVal,
-                                                'select',
-                                              )
-                                            }
+                                            className="text-[11px]"
                                           >
-                                            <CheckSquare className="h-3.5 w-3.5" />
-                                            {prefixVal.trim()
-                                              ? `全選前綴「${prefixVal.trim().toUpperCase()}」(${filteredGroupOptions.length})`
-                                              : `全選全部組別 (${filteredGroupOptions.length})`}
-                                          </Button>
+                                            {formatGroupSelectionSummary(selectedCodes)}
+                                          </Badge>
                                           <Button
                                             variant="outline"
                                             size="sm"
                                             className="h-7 text-xs"
-                                            disabled={filteredGroupOptions.length === 0}
                                             onClick={() =>
-                                              handlePrefixBatchSelectInOverride(
-                                                rule.id,
-                                                prefixVal,
-                                                'deselect',
-                                              )
+                                              handleOpenGroupPickerModal(rule.id, ruleIdx + 1)
                                             }
                                           >
-                                            {prefixVal.trim()
-                                              ? `取消前綴「${prefixVal.trim().toUpperCase()}」`
-                                              : '取消全部'}
+                                            選取組別...
                                           </Button>
-                                          {prefixVal.trim() && (
-                                            <Button
-                                              variant="ghost"
-                                              size="sm"
-                                              className="h-7 text-xs text-slate-500"
-                                              onClick={() =>
-                                                setRulePrefixInputs((prev) => ({
-                                                  ...prev,
-                                                  [rule.id]: '',
-                                                }))
+
+                                          <span className="text-slate-600 font-medium ml-1">
+                                            使用對比依據：
+                                          </span>
+                                          <select
+                                            value={
+                                              isCustomMatchKey(rule.matchKey)
+                                                ? CUSTOM_MATCH_KEY_PREFIX
+                                                : rule.matchKey
+                                            }
+                                            onChange={(e) => {
+                                              const val = e.target.value;
+                                              if (isCustomMatchKey(val)) {
+                                                handleOpenCustomCompositeModal(
+                                                  {
+                                                    type: 'rule',
+                                                    ruleId: rule.id,
+                                                    ruleIndex: ruleIdx + 1,
+                                                  },
+                                                  rule.matchKey,
+                                                  workbook.dbHeaders,
+                                                );
+                                              } else {
+                                                handleUpdateGroupMatchOverride(rule.id, {
+                                                  matchKey: val,
+                                                });
                                               }
-                                            >
-                                              清除前綴過濾
-                                            </Button>
+                                            }}
+                                            className="h-7 rounded border border-slate-200 bg-white px-2 text-xs text-slate-800"
+                                          >
+                                            {getGlobalMatchKeyOptions(workbook.dbHeaders).map(
+                                              (opt) => (
+                                                <option key={opt.key} value={opt.key}>
+                                                  {opt.label}
+                                                </option>
+                                              ),
+                                            )}
+                                          </select>
+                                          {isCustomMatchKey(rule.matchKey) && (
+                                            <>
+                                              <Badge
+                                                variant="secondary"
+                                                className="bg-indigo-100 text-indigo-950 text-[11px]"
+                                              >
+                                                複合欄：{formatCustomCompositeSummary(rule.matchKey)}
+                                              </Badge>
+                                              <Button
+                                                variant="outline"
+                                                size="sm"
+                                                className="h-7 text-xs"
+                                                onClick={() =>
+                                                  handleOpenCustomCompositeModal(
+                                                    {
+                                                      type: 'rule',
+                                                      ruleId: rule.id,
+                                                      ruleIndex: ruleIdx + 1,
+                                                    },
+                                                    rule.matchKey,
+                                                    workbook.dbHeaders,
+                                                  )
+                                                }
+                                              >
+                                                設定複合欄...
+                                              </Button>
+                                            </>
                                           )}
                                         </div>
 
-                                        {/* Row 3: Selected Group Chips */}
-                                        {selectedCodes.length > 0 && (
-                                          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                                            <span className="text-[11px] text-slate-500">
-                                              已套用組別：
-                                            </span>
-                                            {selectedCodes.map((code) => {
-                                              const meta = groupMetaByUpper.get(
-                                                code.trim().toUpperCase(),
-                                              );
-                                              return (
-                                                <Badge
-                                                  key={code}
-                                                  variant="secondary"
-                                                  className="gap-1 bg-indigo-100/80 text-indigo-950 text-[11px]"
-                                                >
-                                                  <span>
-                                                    {code}
-                                                    {meta?.nameZh ? ` ${meta.nameZh}` : ''}
-                                                  </span>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                      handleToggleGroupInOverride(rule.id, code)
-                                                    }
-                                                    className="ml-0.5 text-slate-500 hover:text-rose-600"
-                                                    title={`移除 ${code}`}
-                                                  >
-                                                    ×
-                                                  </button>
-                                                </Badge>
-                                              );
-                                            })}
-                                          </div>
-                                        )}
-
-                                        {/* Row 4: Multi-Select Checkbox Grid */}
-                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-1 max-h-36 overflow-y-auto rounded border border-slate-200 bg-white p-1.5">
-                                          {filteredGroupOptions.length === 0 ? (
-                                            <span className="col-span-full text-slate-400 py-2 text-center">
-                                              找不到符合前綴「{prefixVal}」的組別
-                                            </span>
-                                          ) : (
-                                            filteredGroupOptions.map((g) => {
-                                              const checked = selectedUpperSet.has(
-                                                g.code.toUpperCase(),
-                                              );
-                                              return (
-                                                <label
-                                                  key={g.code}
-                                                  className={`flex items-center gap-1.5 rounded px-2 py-1 cursor-pointer truncate ${
-                                                    checked
-                                                      ? 'bg-indigo-50 text-indigo-950 font-medium'
-                                                      : 'text-slate-600 hover:bg-slate-50'
-                                                  }`}
-                                                  title={`${g.code} ${g.nameZh}${
-                                                    g.externalCount > 0
-                                                      ? ` (篩選檔內 ${g.externalCount} 筆)`
-                                                      : ''
-                                                  }`}
-                                                >
-                                                  <input
-                                                    type="checkbox"
-                                                    checked={checked}
-                                                    onChange={() =>
-                                                      handleToggleGroupInOverride(
-                                                        rule.id,
-                                                        g.code,
-                                                      )
-                                                    }
-                                                    className="h-3.5 w-3.5 rounded border-slate-300 shrink-0"
-                                                  />
-                                                  <span className="truncate">
-                                                    {g.code} {g.nameZh}
-                                                    {g.externalCount > 0
-                                                      ? ` (${g.externalCount})`
-                                                      : ''}
-                                                  </span>
-                                                </label>
-                                              );
-                                            })
-                                          )}
-                                        </div>
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() =>
+                                            handleRemoveGroupMatchOverride(rule.id)
+                                          }
+                                          className="h-7 px-2 text-slate-400 hover:text-rose-600"
+                                          title="移除此組別規則"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
                                       </div>
                                     );
                                   })}
@@ -2631,17 +2489,10 @@ export default function App(): React.ReactElement {
                                           </span>
                                         )}
                                       </div>
-
-                                      {renderCustomCompositeColumnPicker(
-                                        file.selectedMatchKey,
-                                        file.sheet.sharedHeaders,
-                                        (nextKey) =>
-                                          handleChangeExternalMatchKey(file.id, nextKey),
-                                      )}
                                     </div>
 
                                     <div className="flex flex-wrap items-center gap-2">
-                                      <div className="flex items-center gap-1">
+                                      <div className="flex flex-wrap items-center gap-1.5">
                                         <span className="text-slate-500">比對依據：</span>
                                         <select
                                           value={
@@ -2651,13 +2502,19 @@ export default function App(): React.ReactElement {
                                           }
                                           onChange={(e) => {
                                             const val = e.target.value;
-                                            const nextKey = isCustomMatchKey(val)
-                                              ? resolveInitialCustomMatchKey(
-                                                  file.selectedMatchKey,
-                                                  file.sheet.sharedHeaders,
-                                                )
-                                              : val;
-                                            handleChangeExternalMatchKey(file.id, nextKey);
+                                            if (isCustomMatchKey(val)) {
+                                              handleOpenCustomCompositeModal(
+                                                {
+                                                  type: 'file',
+                                                  fileId: file.id,
+                                                  fileName: file.fileName,
+                                                },
+                                                file.selectedMatchKey,
+                                                file.sheet.sharedHeaders,
+                                              );
+                                            } else {
+                                              handleChangeExternalMatchKey(file.id, val);
+                                            }
                                           }}
                                           className="h-7 rounded border border-slate-200 bg-slate-50 px-2 text-xs text-slate-800"
                                         >
@@ -2667,6 +2524,34 @@ export default function App(): React.ReactElement {
                                             </option>
                                           ))}
                                         </select>
+                                        {isCustomMatchKey(file.selectedMatchKey) && (
+                                          <>
+                                            <Badge
+                                              variant="secondary"
+                                              className="bg-indigo-100 text-indigo-950 text-[11px]"
+                                            >
+                                              複合欄：{formatCustomCompositeSummary(file.selectedMatchKey)}
+                                            </Badge>
+                                            <Button
+                                              variant="outline"
+                                              size="sm"
+                                              className="h-7 text-xs"
+                                              onClick={() =>
+                                                handleOpenCustomCompositeModal(
+                                                  {
+                                                    type: 'file',
+                                                    fileId: file.id,
+                                                    fileName: file.fileName,
+                                                  },
+                                                  file.selectedMatchKey,
+                                                  file.sheet.sharedHeaders,
+                                                )
+                                              }
+                                            >
+                                              設定複合欄...
+                                            </Button>
+                                          </>
+                                        )}
                                       </div>
 
                                       <Button
@@ -3221,6 +3106,469 @@ export default function App(): React.ReactElement {
           </>
         )}
       </main>
+
+      {/* Modal 1: Group Selection (Prefix + Multi-select) */}
+      {groupPickerModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          onClick={() => setGroupPickerModal(null)}
+        >
+          <div
+            className="w-full max-w-3xl rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="default">規則 #{groupPickerModal.ruleIndex}</Badge>
+                <h3 className="text-sm font-semibold text-slate-900">
+                  選取套用組別（支援 Prefix 快速批次選取與多選）
+                </h3>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-slate-400 hover:text-slate-700"
+                onClick={() => setGroupPickerModal(null)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {(() => {
+              const draftCodes = groupPickerModal.draftGroupCodes;
+              const draftUpperSet = new Set(draftCodes.map((c) => c.trim().toUpperCase()));
+              const prefixVal = groupPickerModal.prefixInput;
+              const filteredGroups = filterGroupsByPrefix(
+                allGroupOverrideOptions,
+                prefixVal,
+              );
+              const groupMetaByUpper = new Map(
+                allGroupOverrideOptions.map((g) => [g.code.toUpperCase(), g]),
+              );
+
+              return (
+                <>
+                  <div className="p-4 space-y-3 overflow-y-auto flex-1 text-xs">
+                    {/* Prefix Quick Filter & Batch Select Bar */}
+                    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50/50 p-2.5">
+                      <span className="font-medium text-slate-700">
+                        Prefix 快速選取：
+                      </span>
+                      <Input
+                        placeholder="輸入組別前綴或名稱 (如 MZ、MA01，按 Enter 直接全選)..."
+                        value={prefixVal}
+                        onChange={(e) =>
+                          setGroupPickerModal((prev) =>
+                            prev ? { ...prev, prefixInput: e.target.value } : null,
+                          )
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && prefixVal.trim()) {
+                            e.preventDefault();
+                            setGroupPickerModal((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    draftGroupCodes: applyPrefixGroupSelection(
+                                      prev.draftGroupCodes,
+                                      allGroupOverrideOptions,
+                                      prefixVal,
+                                      'select',
+                                    ),
+                                  }
+                                : null,
+                            );
+                          }
+                        }}
+                        className="h-8 w-64 bg-white text-xs"
+                      />
+                      <Button
+                        variant="default"
+                        size="sm"
+                        className="h-8 text-xs"
+                        disabled={filteredGroups.length === 0}
+                        onClick={() =>
+                          setGroupPickerModal((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  draftGroupCodes: applyPrefixGroupSelection(
+                                    prev.draftGroupCodes,
+                                    allGroupOverrideOptions,
+                                    prefixVal,
+                                    'select',
+                                  ),
+                                }
+                              : null,
+                          )
+                        }
+                      >
+                        <CheckSquare className="h-3.5 w-3.5" />
+                        {prefixVal.trim()
+                          ? `全選前綴「${prefixVal.trim().toUpperCase()}」(${filteredGroups.length})`
+                          : `全選全部組別 (${filteredGroups.length})`}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs bg-white"
+                        disabled={filteredGroups.length === 0}
+                        onClick={() =>
+                          setGroupPickerModal((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  draftGroupCodes: applyPrefixGroupSelection(
+                                    prev.draftGroupCodes,
+                                    allGroupOverrideOptions,
+                                    prefixVal,
+                                    'deselect',
+                                  ),
+                                }
+                              : null,
+                          )
+                        }
+                      >
+                        {prefixVal.trim()
+                          ? `取消前綴「${prefixVal.trim().toUpperCase()}」`
+                          : '取消全部'}
+                      </Button>
+                      {prefixVal.trim() && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 text-xs text-slate-500"
+                          onClick={() =>
+                            setGroupPickerModal((prev) =>
+                              prev ? { ...prev, prefixInput: '' } : null,
+                            )
+                          }
+                        >
+                          清除前綴過濾
+                        </Button>
+                      )}
+                    </div>
+
+                    {/* Selected Group Chips */}
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-slate-700">
+                          目前已選組別（共 {draftCodes.length} 個）：
+                        </span>
+                        {draftCodes.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-[11px] text-slate-500 hover:text-rose-600"
+                            onClick={() =>
+                              setGroupPickerModal((prev) =>
+                                prev ? { ...prev, draftGroupCodes: [] } : null,
+                              )
+                            }
+                          >
+                            清空全部已選
+                          </Button>
+                        )}
+                      </div>
+                      {draftCodes.length === 0 ? (
+                        <p className="text-slate-400">
+                          尚未選取任何組別，請從上方輸入 Prefix 批次全選或於下方清單勾選。
+                        </p>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-1.5 max-h-24 overflow-y-auto pt-0.5">
+                          {draftCodes.map((code) => {
+                            const meta = groupMetaByUpper.get(code.trim().toUpperCase());
+                            return (
+                              <Badge
+                                key={code}
+                                variant="secondary"
+                                className="gap-1 bg-indigo-100/90 text-indigo-950 text-[11px]"
+                              >
+                                <span>
+                                  {code}
+                                  {meta?.nameZh ? ` ${meta.nameZh}` : ''}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setGroupPickerModal((prev) =>
+                                      prev
+                                        ? {
+                                            ...prev,
+                                            draftGroupCodes: toggleGroupCodeInList(
+                                              prev.draftGroupCodes,
+                                              code,
+                                            ),
+                                          }
+                                        : null,
+                                    )
+                                  }
+                                  className="ml-0.5 text-slate-500 hover:text-rose-600"
+                                  title={`移除 ${code}`}
+                                >
+                                  ×
+                                </button>
+                              </Badge>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Multi-Select Checkbox Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white p-2">
+                      {filteredGroups.length === 0 ? (
+                        <span className="col-span-full text-slate-400 py-6 text-center">
+                          找不到符合前綴「{prefixVal}」的組別
+                        </span>
+                      ) : (
+                        filteredGroups.map((g) => {
+                          const checked = draftUpperSet.has(g.code.toUpperCase());
+                          return (
+                            <label
+                              key={g.code}
+                              className={`flex items-center gap-1.5 rounded px-2 py-1.5 cursor-pointer truncate border transition-colors ${
+                                checked
+                                  ? 'border-indigo-300 bg-indigo-50 text-indigo-950 font-medium'
+                                  : 'border-transparent text-slate-600 hover:bg-slate-50'
+                              }`}
+                              title={`${g.code} ${g.nameZh}${
+                                g.externalCount > 0 ? ` (篩選檔內 ${g.externalCount} 筆)` : ''
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  setGroupPickerModal((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          draftGroupCodes: toggleGroupCodeInList(
+                                            prev.draftGroupCodes,
+                                            g.code,
+                                          ),
+                                        }
+                                      : null,
+                                  )
+                                }
+                                className="h-3.5 w-3.5 rounded border-slate-300 shrink-0"
+                              />
+                              <span className="truncate">
+                                {g.code} {g.nameZh}
+                                {g.externalCount > 0 ? ` (${g.externalCount})` : ''}
+                              </span>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setGroupPickerModal(null)}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleConfirmGroupPickerModal}
+                    >
+                      確認套用（已選 {draftCodes.length} 個組別）
+                    </Button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* Modal 2: Custom Composite Match Key Columns */}
+      {customCompositeModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4"
+          onClick={() => setCustomCompositeModal(null)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <Badge variant="default">
+                  {customCompositeModal.target.type === 'default'
+                    ? '預設對比依據'
+                    : customCompositeModal.target.type === 'rule'
+                      ? `組別規則 #${customCompositeModal.target.ruleIndex}`
+                      : `單一檔案：${customCompositeModal.target.fileName}`}
+                </Badge>
+                <h3 className="text-sm font-semibold text-slate-900">
+                  設定自訂複合欄對比依據
+                </h3>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-slate-400 hover:text-slate-700"
+                onClick={() => setCustomCompositeModal(null)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {(() => {
+              const draftCols = customCompositeModal.draftColumns;
+              const selectedSet = new Set(draftCols);
+              const searchKw = customCompositeModal.searchQuery.trim().toLowerCase();
+              const orderedCols = prioritizeMatchColumns(
+                customCompositeModal.availableColumns,
+              ).filter((col) =>
+                searchKw ? col.toLowerCase().includes(searchKw) : true,
+              );
+
+              return (
+                <>
+                  <div className="p-4 space-y-3 overflow-y-auto flex-1 text-xs">
+                    {/* Selected Composite Key Preview */}
+                    <div className="rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-indigo-950">
+                          複合比對欄位組合（已選 {draftCols.length} 欄，須同時有值且一致才算命中）：
+                        </span>
+                        {draftCols.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-[11px] text-slate-500 hover:text-rose-600"
+                            onClick={() =>
+                              setCustomCompositeModal((prev) =>
+                                prev ? { ...prev, draftColumns: [] } : null,
+                              )
+                            }
+                          >
+                            清空欄位
+                          </Button>
+                        )}
+                      </div>
+
+                      {draftCols.length === 0 ? (
+                        <p className="text-rose-600 font-medium">
+                          請從下方勾選至少 1 個欄位以建立複合比對依據。
+                        </p>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {draftCols.map((col, idx) => (
+                            <React.Fragment key={col}>
+                              {idx > 0 && (
+                                <span className="text-indigo-600 font-bold">+</span>
+                              )}
+                              <Badge
+                                variant="secondary"
+                                className="gap-1 bg-indigo-600 text-white hover:bg-indigo-700 text-[11px]"
+                              >
+                                <span>{col}</span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setCustomCompositeModal((prev) =>
+                                      prev
+                                        ? {
+                                            ...prev,
+                                            draftColumns: prev.draftColumns.filter(
+                                              (c) => c !== col,
+                                            ),
+                                          }
+                                        : null,
+                                    )
+                                  }
+                                  className="ml-0.5 text-indigo-100 hover:text-white"
+                                  title={`移除「${col}」`}
+                                >
+                                  ×
+                                </button>
+                              </Badge>
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Search Columns Input */}
+                    <div className="flex items-center gap-2">
+                      <Input
+                        placeholder="搜尋欄位名稱 (如 姓名、電話、公司)..."
+                        value={customCompositeModal.searchQuery}
+                        onChange={(e) =>
+                          setCustomCompositeModal((prev) =>
+                            prev ? { ...prev, searchQuery: e.target.value } : null,
+                          )
+                        }
+                        className="h-8 text-xs"
+                      />
+                    </div>
+
+                    {/* Column Selection Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white p-2">
+                      {orderedCols.map((col) => {
+                        const checked = selectedSet.has(col);
+                        return (
+                          <label
+                            key={col}
+                            className={`flex items-center gap-2 rounded px-2.5 py-1.5 cursor-pointer truncate border transition-colors ${
+                              checked
+                                ? 'border-indigo-400 bg-indigo-50 text-indigo-950 font-semibold'
+                                : 'border-slate-100 text-slate-700 hover:bg-slate-50'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setCustomCompositeModal((prev) => {
+                                  if (!prev) return null;
+                                  const nextCols = prev.draftColumns.includes(col)
+                                    ? prev.draftColumns.filter((c) => c !== col)
+                                    : [...prev.draftColumns, col];
+                                  return { ...prev, draftColumns: nextCols };
+                                })
+                              }
+                              className="h-3.5 w-3.5 rounded border-slate-300 shrink-0"
+                            />
+                            <span className="truncate">{col}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCustomCompositeModal(null)}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      disabled={draftCols.length === 0}
+                      onClick={handleConfirmCustomCompositeModal}
+                    >
+                      確認套用（{draftCols.length} 欄）
+                    </Button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
