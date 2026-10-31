@@ -2,14 +2,20 @@ import { describe, expect, test } from 'bun:test';
 import * as XLSX from 'xlsx';
 import { filterDbRows, type DbRowItem } from '../lib/excelParser';
 import {
+  CUSTOM_MATCH_KEY_PREFIX,
   applyPrefixGroupSelection,
   computeExternalFilterRowSet,
+  encodeCustomMatchKey,
   filterGroupsByPrefix,
   getAvailableMatchKeys,
   getGroupOptionsForOverride,
+  isCustomMatchKey,
   matchExternalFilterToDb,
   mergeExtraValuesFromFiles,
+  parseCustomMatchKeyColumns,
   parseExternalFilterWorkbook,
+  prioritizeMatchColumns,
+  toggleColumnInCustomMatchKey,
 } from '../lib/externalFilterMatcher';
 
 function makeWorkbookBuffer(sheetName: string, aoa: string[][]): Uint8Array {
@@ -313,5 +319,105 @@ describe('externalFilterMatcher', () => {
     });
 
     expect(Array.from(res.matchedDbRowNumbers)).toEqual([4, 5]);
+  });
+
+  test('supports custom composite match keys (2+ arbitrary columns) in default, group override, and single-file modes', () => {
+    const customHeaders = ['組別', 'PID', '姓名', '中文名(沒有稱謂)', '手提電話', '公司名稱'];
+    const customDbRows: DbRowItem[] = [
+      {
+        rowNumber: 2,
+        kind: 'record',
+        values: {
+          組別: 'MA001',
+          PID: '1',
+          姓名: '陳大文',
+          '中文名(沒有稱謂)': '陳大文',
+          手提電話: '91112222',
+          公司名稱: 'Alpha Ltd',
+        },
+        ancestorSectionRows: [],
+      },
+      {
+        rowNumber: 3,
+        kind: 'record',
+        values: {
+          組別: 'MA001',
+          PID: '2',
+          姓名: '陳大文',
+          '中文名(沒有稱謂)': '陳大文',
+          手提電話: '93334444',
+          公司名稱: 'Beta Ltd',
+        },
+        ancestorSectionRows: [],
+      },
+      {
+        rowNumber: 4,
+        kind: 'record',
+        values: {
+          組別: 'MZ001',
+          PID: '',
+          姓名: '李小明',
+          '中文名(沒有稱謂)': '李小明',
+          手提電話: '',
+          公司名稱: 'Gamma Corp',
+        },
+        ancestorSectionRows: [],
+      },
+    ];
+
+    const extBuf = makeWorkbookBuffer('Sheet1', [
+      ['組別', '姓名', '中文名(沒有稱謂)', '手提電話', '公司名稱'],
+      ['MA001', '陳大文', '陳大文', '93334444', 'Beta Ltd'],
+      ['MZ001', '李小明', '李小明', '', 'Gamma Corp'],
+    ]);
+    const sheet = parseExternalFilterWorkbook(extBuf, 'custom-composite.xlsx', customHeaders);
+
+    // 1. Encode/decode and toggle helpers
+    const key1 = encodeCustomMatchKey(['組別', '姓名', '手提電話']);
+    expect(key1.startsWith(CUSTOM_MATCH_KEY_PREFIX)).toBe(true);
+    expect(isCustomMatchKey(key1)).toBe(true);
+    expect(parseCustomMatchKeyColumns(key1)).toEqual(['組別', '姓名', '手提電話']);
+
+    const toggled = toggleColumnInCustomMatchKey(key1, '姓名');
+    expect(parseCustomMatchKeyColumns(toggled)).toEqual(['組別', '手提電話']);
+    const toggledBack = toggleColumnInCustomMatchKey(toggled, '中文名(沒有稱謂)');
+    expect(parseCustomMatchKeyColumns(toggledBack)).toEqual([
+      '組別',
+      '手提電話',
+      '中文名(沒有稱謂)',
+    ]);
+
+    // 2. Prioritized columns put common identity columns first
+    const prioritized = prioritizeMatchColumns([
+      '備註',
+      '公司名稱',
+      '組別',
+      '手提電話',
+      '姓名',
+    ]);
+    expect(prioritized.slice(0, 4)).toEqual(['組別', '姓名', '手提電話', '公司名稱']);
+
+    // 3. Match with 3-column custom key ['組別', '姓名', '手提電話'] disambiguates same-name records in MA001
+    // and strictly does not match MZ001 where 手提電話 is blank
+    const res3Col = matchExternalFilterToDb(sheet, customDbRows, key1);
+    expect(res3Col.resolvedKeyColumns).toEqual(['組別', '姓名', '手提電話']);
+    expect(Array.from(res3Col.matchedDbRowNumbers)).toEqual([3]);
+
+    // 4. Global default = key1 (3-col), plus MZ001 group override using custom ['組別', '公司名稱', '中文名(沒有稱謂)']
+    const mzCustomKey = encodeCustomMatchKey(['組別', '公司名稱', '中文名(沒有稱謂)']);
+    const resGlobal = matchExternalFilterToDb(sheet, customDbRows, 'global', {
+      defaultMatchKey: key1,
+      groupOverrides: [{ id: 'r1', groupCodes: ['MZ001'], matchKey: mzCustomKey }],
+    });
+    expect(Array.from(resGlobal.matchedDbRowNumbers).sort((a, b) => a - b)).toEqual([3, 4]);
+
+    // 5. Missing column in external sheet or empty custom key returns 0 matches safely
+    const missingColKey = encodeCustomMatchKey(['組別', 'PID']); // PID not in extBuf
+    expect(
+      Array.from(matchExternalFilterToDb(sheet, customDbRows, missingColKey).matchedDbRowNumbers),
+    ).toEqual([]);
+    expect(
+      Array.from(matchExternalFilterToDb(sheet, customDbRows, 'custom:').matchedDbRowNumbers),
+    ).toEqual([]);
   });
 });

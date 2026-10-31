@@ -217,12 +217,91 @@ export function resolveAutoMatchKeyColumns(
   return sheet.sharedHeaders.length > 0 ? [sheet.sharedHeaders[0]] : [];
 }
 
+export const CUSTOM_MATCH_KEY_PREFIX = 'custom:';
+const CUSTOM_COL_DELIMITER = '\u001f';
+
+const PRIORITY_MATCH_COLUMNS: string[] = [
+  '組別',
+  'PID',
+  'Pf.ID',
+  '姓名',
+  '中文名(沒有稱謂)',
+  '英文名(沒有稱謂)',
+  '手提電話',
+  '電郵',
+  '公司名稱',
+  '職位',
+];
+
+export function isCustomMatchKey(matchKey: string): boolean {
+  return matchKey === 'custom' || matchKey.startsWith(CUSTOM_MATCH_KEY_PREFIX);
+}
+
+export function encodeCustomMatchKey(columns: ReadonlyArray<string>): string {
+  const uniqueCols: string[] = [];
+  for (const col of columns) {
+    const trimmed = col.trim();
+    if (trimmed && !uniqueCols.includes(trimmed)) {
+      uniqueCols.push(trimmed);
+    }
+  }
+  return `${CUSTOM_MATCH_KEY_PREFIX}${uniqueCols.join(CUSTOM_COL_DELIMITER)}`;
+}
+
+export function parseCustomMatchKeyColumns(matchKey: string): string[] {
+  if (!isCustomMatchKey(matchKey)) return [];
+  const raw = matchKey.startsWith(CUSTOM_MATCH_KEY_PREFIX)
+    ? matchKey.slice(CUSTOM_MATCH_KEY_PREFIX.length)
+    : '';
+  if (!raw.trim()) return [];
+  return raw
+    .split(CUSTOM_COL_DELIMITER)
+    .map((c) => c.trim())
+    .filter(Boolean);
+}
+
+export function toggleColumnInCustomMatchKey(matchKey: string, column: string): string {
+  const currentCols = parseCustomMatchKeyColumns(matchKey);
+  const target = column.trim();
+  if (!target) return encodeCustomMatchKey(currentCols);
+  const exists = currentCols.includes(target);
+  const nextCols = exists
+    ? currentCols.filter((c) => c !== target)
+    : [...currentCols, target];
+  return encodeCustomMatchKey(nextCols);
+}
+
+export function prioritizeMatchColumns(headers: ReadonlyArray<string>): string[] {
+  const headerSet = new Set(headers);
+  const prioritized: string[] = [];
+  const seen = new Set<string>();
+
+  for (const col of PRIORITY_MATCH_COLUMNS) {
+    if (headerSet.has(col) && !seen.has(col)) {
+      prioritized.push(col);
+      seen.add(col);
+    }
+  }
+  for (const col of headers) {
+    if (!seen.has(col)) {
+      prioritized.push(col);
+      seen.add(col);
+    }
+  }
+  return prioritized;
+}
+
 export function getGlobalMatchKeyOptions(dbHeaders: string[]): ExternalMatchKeyOption[] {
   const headerSet = new Set(dbHeaders);
   const options: ExternalMatchKeyOption[] = [
     {
       key: 'auto',
       label: '自動偵測 (Pf.ID → PID+組別 → PID → 組別+姓名 → 姓名)',
+      columns: [],
+    },
+    {
+      key: CUSTOM_MATCH_KEY_PREFIX,
+      label: '自訂複合欄（任意勾選多欄組合）...',
       columns: [],
     },
   ];
@@ -262,6 +341,11 @@ export function resolveMatchKeyColumns(
   if (matchKey === 'auto') {
     return resolveAutoMatchKeyColumns(sheet, dbRows);
   }
+  if (isCustomMatchKey(matchKey)) {
+    const customCols = parseCustomMatchKeyColumns(matchKey);
+    if (customCols.length === 0) return [];
+    return customCols.every((c) => sharedSet.has(c)) ? customCols : [];
+  }
   if (matchKey === 'PID+組別') {
     return sharedSet.has('PID') && sharedSet.has('組別') ? ['PID', '組別'] : [];
   }
@@ -287,6 +371,11 @@ export function getAvailableMatchKeys(
       key: 'auto',
       label: `單檔自動偵測${autoSuffix}`,
       columns: autoCols,
+    },
+    {
+      key: CUSTOM_MATCH_KEY_PREFIX,
+      label: '自訂複合欄（任意勾選多欄組合）...',
+      columns: [],
     },
   ];
 
