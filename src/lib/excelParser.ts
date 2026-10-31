@@ -437,6 +437,7 @@ export interface DbFilterOptions {
   groupFilter?: string;
   selectionFilter?: 'all' | 'selected' | 'unselected';
   selectedRowNumbers?: ReadonlySet<number>;
+  externalMatchedRowNumbers?: ReadonlySet<number> | null;
   customRules?: CustomFilterRule[];
   customRulesMode?: 'AND' | 'OR';
   showSectionHeaders: boolean;
@@ -506,6 +507,7 @@ export function filterDbRows(rows: DbRowItem[], options: DbFilterOptions): DbRow
   const groupFilter = options.groupFilter ?? 'all';
   const selectionFilter = options.selectionFilter ?? 'all';
   const selectedSet = options.selectedRowNumbers;
+  const externalMatchedSet = options.externalMatchedRowNumbers ?? null;
   const effectiveRules = (options.customRules ?? []).filter(isRuleEffective);
   const rulesMode = options.customRulesMode ?? 'AND';
   const sortColumn = options.sort?.column ?? null;
@@ -520,6 +522,7 @@ export function filterDbRows(rows: DbRowItem[], options: DbFilterOptions): DbRow
     categoryFilter !== 'all' ||
     groupFilter !== 'all' ||
     selectionFilter !== 'all' ||
+    externalMatchedSet !== null ||
     effectiveRules.length > 0;
 
   const hasAnyFilter = query !== '' || hasNonSearchFilter;
@@ -576,6 +579,10 @@ export function filterDbRows(rows: DbRowItem[], options: DbFilterOptions): DbRow
       continue;
     }
     if (selectionFilter === 'unselected' && selectedSet?.has(row.rowNumber)) {
+      continue;
+    }
+
+    if (externalMatchedSet !== null && !externalMatchedSet.has(row.rowNumber)) {
       continue;
     }
 
